@@ -1,0 +1,13 @@
+{
+  "name": "quantum-saas-portal",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0",
+    "axios": "^1.4.0",
+    "crypto": "^1.0.1"
+  }
+}
