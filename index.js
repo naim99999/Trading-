@@ -25,9 +25,9 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// 🎯 ৪০টি টপ কয়েন পুল (যাতে ক্যাপিটাল ১ সেকেন্ডও বসে না থাকে)
+// 🎯 ৪০টি টপ কয়েন পুল
 const COINS = [
-    { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
+    { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
     { s: "BONKUSDT", n: "BONK", d: 8, qd: 0 }, { s: "WIFUSDT", n: "WIF", d: 4, qd: 1 },
     { s: "DOGEUSDT", n: "DOGE", d: 5, qd: 0 }, { s: "NEARUSDT", n: "NEAR", d: 4, qd: 1 },
@@ -40,7 +40,6 @@ const COINS = [
 let market = {};
 COINS.forEach(c => market[c.s] = { p: 0, lp: 0, trend: 0 });
 let userSlots = {}; 
-let lastReportMin = -1;
 
 function sign(q, secret) { return crypto.createHmac('sha256', secret).update(q).digest('hex'); }
 
@@ -75,8 +74,6 @@ async function startGlobalEngine() {
 
         const s = market[msg.s];
         s.lp = s.p; s.p = parseFloat(msg.c);
-        
-        // মুভমেন্ট ট্র্যাকিং
         if (s.p > s.lp) s.trend = Math.min(10, s.trend + 1); else if(s.p < s.lp) s.trend = 0;
 
         let allUsers = getAllUsers();
@@ -94,9 +91,8 @@ async function startGlobalEngine() {
             slots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s) return;
 
-                // ১. লিমিট বাই চেক ও টাইমআউট (২ মিনিট)
                 if (sl.status === 'WAITING') {
-                    if (now - sl.waitTime > 120000) { // ২ মিনিট পার হলে
+                    if (now - sl.waitTime > 120000) { 
                         sl.active = false; sl.status = 'IDLE'; sl.sym = '';
                         return;
                     }
@@ -106,36 +102,44 @@ async function startGlobalEngine() {
                     }
                 }
 
-                // ২. লিকুইডেশন শিল্ড DCA (১২-লেয়ার)
                 if (sl.status === 'BOUGHT') {
                     sl.pnl = ((s.p - sl.buy) / sl.buy) * 100 * (config.lev || 50);
+
+                    // DCA প্রোটেকশন (০.৪০% গ্যাপ)
                     const drop = ((sl.lastBuy - s.p) / sl.lastBuy) * 100;
-                    if (drop >= 0.38 && sl.dca < 12) {
+                    if (drop >= 0.40 && sl.dca < 12) {
                         const order = await placeOrder(sl.sym, "BUY", s.p.toFixed(COINS.find(c=>c.s===sl.sym).d), sl.qty, config);
                         if (order) {
                             sl.buy = (sl.buy + s.p) / 2; sl.qty = (parseFloat(sl.qty) * 2).toFixed(COINS.find(c=>c.s===sl.sym).qd);
-                            sl.sell = (sl.buy * 1.0007).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
-                            sendTG(`🛡️ *DCA Shield Active:* ${sl.sym} (L${sl.dca})`, config.cid);
+                            sl.sell = (sl.buy * 1.0006).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
+                        }
+                    }
+
+                    // ৩. প্রফিট সেল চেক (লস লজিক ফিক্স)
+                    if (s.p >= sl.sell) {
+                        const sellVal = sl.qty * s.p;
+                        const buyVal = sl.qty * sl.buy;
+                        const totalFee = sellVal * 0.001; // ০.১০% সেফটি ফি
+                        const netGain = sellVal - buyVal - totalFee;
+
+                        if (netGain >= 0.01) { // ফি বাদে অন্তত ১ সেন্ট লাভ থাকলে সেল হবে
+                            let db = getAllUsers();
+                            sl.active = false;
+                            config.profit += netGain;
+                            config.count += 1;
+                            saveUser(userId, config);
+                            sendTG(`🎉 *SOLD SUCCESS!* \n💰 কয়েন: ${sl.sym.replace('USDT','')} \n💵 লাভ: ৳${(netGain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
+                            sl.status = 'IDLE'; sl.sym = '';
                         }
                     }
                 }
-
-                // ৩. প্রফিট ক্লোজ
-                if (sl.status === 'BOUGHT' && s.p >= sl.sell) {
-                    const gain = (sl.qty * sl.sell) - (sl.qty * sl.buy) - (sl.qty * sl.sell * 0.0008);
-                    sl.active = false; config.profit += gain; config.count += 1;
-                    saveUser(userId, config);
-                    sendTG(`🎉 *SOLD SUCCESS!* \n💰 কয়েন: ${sl.sym.replace('USDT','')} \n💵 লাভ: ৳${(gain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
-                    sl.status = 'IDLE'; sl.sym = '';
-                }
             });
 
-            // ৪. লিমিট এন্ট্রি লজিক (নিচে কেনা)
             const slotIdx = slots.findIndex(sl => !sl.active);
             if (slotIdx !== -1 && s.trend >= 2 && !slots.some(sl => sl.active && sl.sym === msg.s)) {
                 const coin = COINS.find(c => c.s === msg.s);
-                const buyPrice = (s.p * 0.9995).toFixed(coin.d); // ০.০৫% নিচে লিমিট অর্ডার
-                const sellPrice = (parseFloat(buyPrice) * 1.0013).toFixed(coin.d);
+                const buyPrice = (s.p * 0.9997).toFixed(coin.d); 
+                const sellPrice = (parseFloat(buyPrice) * 1.0015).toFixed(coin.d); // টার্গেট গ্যাপ বাড়ানো হয়েছে সেফটির জন্য
                 const qty = ((config.cap / 5 * config.lev) / parseFloat(buyPrice)).toFixed(coin.qd);
 
                 const order = await placeOrder(msg.s, "BUY", buyPrice, qty, config, "LIMIT");
@@ -160,10 +164,17 @@ const server = http.createServer((req, res) => {
         return res.end("Success");
     }
 
+    // 🔄 রিসেট লজিক আপডেট (মুছে ফেলে লগআউট করবে)
     if (url.pathname === '/reset-now') {
         const id = url.searchParams.get('id');
-        if(users[id]) { users[id].profit = 0; users[id].count = 0; saveUser(id, users[id]); }
-        res.writeHead(302, { 'Location': '/' + id }); return res.end();
+        if(users[id]) { 
+            users[id].profit = 0; 
+            users[id].count = 0; 
+            saveUser(id, users[id]); 
+            delete userSlots[id]; // স্লট ক্লিয়ার
+        }
+        res.writeHead(302, { 'Location': '/' }); // লগইন পেজে ব্যাক
+        return res.end();
     }
 
     if (url.pathname === '/register') {
@@ -174,16 +185,16 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !users[userId]) {
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
         <body class="bg-[#020617] text-white p-6 font-sans flex items-center min-h-screen text-center"><div class="max-w-md mx-auto space-y-6 w-full">
             <h1 class="text-5xl font-black text-sky-400 italic italic">QUANTUM MASTER</h1>
             <form action="/register" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 text-left shadow-2xl border border-sky-500/10">
                 <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none" required>
-                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
+                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
                 <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
                 <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
                 <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white" required>
-                <div class="grid grid-cols-2 gap-3"><input name="cap" type="number" min="5" value="10" class="bg-black p-4 rounded-2xl"><input name="lev" type="number" value="50" class="bg-black p-4 rounded-2xl"></div>
+                <div class="grid grid-cols-2 gap-3"><input name="cap" type="number" min="5" value="10" class="bg-black p-4 rounded-2xl text-white"><input name="lev" type="number" value="50" class="bg-black p-4 rounded-2xl text-white"></div>
                 <button class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase tracking-widest shadow-lg">Launch Engine</button>
             </form>
         </div></body></html>`);
@@ -191,10 +202,10 @@ const server = http.createServer((req, res) => {
         let user = users[userId];
         let slots = userSlots[userId] || Array(5).fill({sym:'READY',status:'IDLE',active:false, pnl:0});
         const active = (userId === ADMIN_USER) || (user.status === 'active');
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
         <body class="bg-[#020617] text-white p-4 font-sans"><div class="max-w-xl mx-auto space-y-4">
-            <div class="p-6 bg-slate-900 rounded-[2rem] border ${active ? 'border-green-500/40' : 'border-red-500/30'} flex justify-between items-center shadow-xl">
-                <div><h2 class="text-3xl font-black italic">${userId.toUpperCase()}</h2><p class="text-[10px] text-slate-500 uppercase tracking-widest">System Sync: Online</p></div>
+            <div class="p-6 bg-slate-900 rounded-[2.5rem] border ${active ? 'border-green-500/40' : 'border-red-500/30'} flex justify-between items-center shadow-xl">
+                <div><h2 class="text-3xl font-black italic underline decoration-sky-600">${userId.toUpperCase()}</h2><p class="text-[10px] text-slate-500 uppercase tracking-widest">System Sync: Online</p></div>
                 <div class="text-right"><div class="text-[9px] font-bold text-slate-500 uppercase">Wallet Gain</div><div class="text-3xl font-black text-green-400">৳${(user.profit * 124).toFixed(0)}</div></div>
             </div>
 
@@ -207,8 +218,8 @@ const server = http.createServer((req, res) => {
                 <div class="bg-zinc-900/80 p-5 rounded-3xl border border-zinc-800 text-center"><p class="text-[10px] text-slate-500 uppercase">Trades</p><p class="text-2xl font-bold text-sky-400">${user.count}</p></div>
             </div>
 
-            <div class="text-center opacity-30"><button onclick="if(confirm('Reset Data?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4">Reset Trading Statistics</button></div>
-        </div><script>setTimeout(()=>location.reload(), 6000);</script></body></html>`);
+            <div class="text-center opacity-30"><button onclick="if(confirm('Reset Data? Your active slots will be cleared and you will be logged out.')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4">Reset Trading Statistics</button></div>
+        </div><script>if(${active}) setTimeout(()=>location.reload(), 5000);</script></body></html>`);
     }
 });
 
