@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ অ্যাডমিন কনফিগারেশন
+// 🛡️ অ্যাডমিন মাস্টার কনফিগ (অপরিবর্তিত)
 // ==========================================
 const ADMIN_USER = "naim1155"; 
 const ADMIN_PASS = "115510"; 
@@ -83,47 +83,34 @@ async function startGlobalEngine() {
         if (s.p > s.lp) { s.trend = Math.min(10, s.trend + 1); s.mom = Math.min(100, s.mom + 15); } 
         else if (s.p < s.lp) { s.trend = 0; s.mom = Math.max(0, s.mom - 15); }
 
-        // ১০-মিনিট রিপোর্ট
-        const bdtTime = new Date(Date.now() + (6 * 60 * 60 * 1000));
-        if (bdtTime.getUTCMinutes() % 10 === 0 && bdtTime.getUTCMinutes() !== lastReportMin) {
-            let users = getAllUsers();
-            for(let id in users) if(users[id].status === 'active') sendTG(`📊 *১০-মিনিট প্রফিট আপডেট*\nবর্তমান মোট লাভ: ৳${(users[id].profit * 124).toFixed(0)}`, users[id].cid);
-            lastReportMin = bdtTime.getUTCMinutes();
-        }
-
         let allUsers = getAllUsers();
         for (let userId in allUsers) {
             let config = allUsers[userId];
             const isAdmin = (userId === ADMIN_USER);
             const now = Date.now();
-            const active = isAdmin || (config.status === 'active' && new Date(config.expiry) > new Date());
+            const activeStatus = isAdmin || (config.status === 'active' && new Date(config.expiry) > new Date());
             const hasActiveTrades = userSlots[userId] && userSlots[userId].some(sl => sl.active);
 
-            if (!active && !hasActiveTrades) continue;
+            if (!activeStatus && !hasActiveTrades) continue;
 
             if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 0, qty: 0, pnl: 0, lastBuy: 0, dca: 0, waitTime: 0, curP: 0 }));
             let slots = userSlots[userId];
 
-            // ১. স্লট ম্যানেজমেন্ট (স্লটগুলো সম্পূর্ণ স্বাধীন)
+            // ১. স্লট ম্যানেজমেন্ট
             slots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
 
-                if (sl.status === 'WAITING' && s.p <= sl.buy) {
-                    sl.status = 'BOUGHT';
-                    sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* (S${sl.id+1})\nকয়েন: *${sl.sym}*\nদাম: ${s.p}`, config.cid);
-                }
-
+                if (sl.status === 'WAITING' && s.p <= sl.buy) sl.status = 'BOUGHT';
                 if (sl.status === 'BOUGHT') {
                     sl.pnl = ((s.p - sl.buy) / sl.buy) * 100 * (config.lev || 50);
                     const drop = ((sl.lastBuy - s.p) / sl.lastBuy) * 100;
                     
-                    if (drop >= 0.45 && sl.dca < 10) {
+                    if (drop >= 0.45 && sl.dca < 12) {
                         const order = await placeOrder(sl.sym, "BUY", s.p.toFixed(COINS.find(c=>c.s===sl.sym).d), sl.qty, config);
                         if (order) {
                             sl.buy = (sl.buy + s.p) / 2; sl.qty = (parseFloat(sl.qty) * 2).toFixed(COINS.find(c=>c.s===sl.sym).qd);
                             sl.sell = (sl.buy * 1.0006).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
-                            sendTG(`🛠 *DCA রিকাভারি সচল!* \nকয়েন: ${sl.sym} | লেয়ার: ${sl.dca}`, config.cid);
                         }
                     }
                     
@@ -140,32 +127,29 @@ async function startGlobalEngine() {
                 }
             });
 
-            // ২. ক্রস-স্লট এন্ট্রি লজিক (The Matrix Logic)
+            // ২. রকেট এন্ট্রি (Trend >= 2)
             const slotIdx = slots.findIndex(sl => !sl.active);
-            if (!config.isPaused && active && slotIdx !== -1 && s.trend >= 3 && s.p < avgPrice) {
+            if (!config.isPaused && activeStatus && slotIdx !== -1 && s.trend >= 2 && s.p < avgPrice) {
                 const coin = COINS.find(c => c.s === msg.s);
-                
-                // শর্ত: যদি এই কয়েন অন্য কোনো স্লটে অলরেডি থাকে, তবে অন্তত ০.৭০% ড্রপ হলে তবেই অন্য স্লটে কিনবে।
                 const sameCoinPositions = slots.filter(sl => sl.active && sl.sym === msg.s);
-                let canBuyCrossSlot = true;
-                if(sameCoinPositions.length > 0) {
-                    const minEntryPrice = Math.min(...sameCoinPositions.map(x => x.buy));
-                    if (s.p > minEntryPrice * 0.993) canBuyCrossSlot = false; // ০.৭০% গ্যাপ
-                }
+                let canBuy = sameCoinPositions.length === 0 || s.p < Math.min(...sameCoinPositions.map(x => x.buy)) * 0.996;
 
-                if (canBuyCrossSlot) {
+                if (canBuy) {
                     const buyP = (s.p * 0.9998).toFixed(coin.d); 
-                    const sellP = (parseFloat(buyP) * 1.0013).toFixed(coin.d);
+                    const sellP = (parseFloat(buyP) * 1.0011).toFixed(coin.d);
                     const qty = ((config.cap / 5 * config.lev) / parseFloat(buyP)).toFixed(coin.qd);
                     const order = await placeOrder(msg.s, "BUY", buyP, qty, config, "LIMIT");
-                    if (order) slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), qty: qty, pnl: 0, lastBuy: parseFloat(buyP), dca: 0, waitTime: Date.now(), curP: s.p };
+                    if (order) {
+                        slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), qty: qty, pnl: 0, lastBuy: parseFloat(buyP), dca: 0, waitTime: Date.now(), curP: s.p };
+                        sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* (S${slotIdx+1})\nকয়েন: *${coin.n}*\nদাম: ${buyP}`, config.cid);
+                    }
                 }
             }
         }
     });
 }
 
-// 🌐 মাস্টার ড্যাশবোর্ড UI
+// 🌐 আল্টিমেট ড্যাশবোর্ড UI
 const server = http.createServer((req, res) => {
     let db = getAllUsers();
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -187,12 +171,11 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
-        res.end(`<body style="background:#020617;color:white;font-family:sans-serif;text-align:center;padding-top:100px;"><h1>QUANTUM MASTER</h1><p>Log in with your User ID.</p></body>`);
+        res.end(`<body style="background:#020617;color:white;font-family:sans-serif;text-align:center;padding-top:100px;"><h1>QUANTUM MASTER</h1><p>Log in with your ID.</p></body>`);
     } else {
         let user = db[userId];
         const isAdmin = (userId === ADMIN_USER);
-        const timeLeft = Math.max(0, (new Date(user.expiry).getTime() - Date.now()) / (1000 * 60 * 60));
-        const active = isAdmin || (user.status === 'active' && timeLeft > 0);
+        const active = isAdmin || (user.status === 'active');
         let slots = userSlots[userId] || Array(5).fill({sym:'Empty',status:'IDLE',active:false, pnl:0});
         
         const avgMom = Object.values(market).reduce((a,b)=>a+b.mom, 0) / COINS.length;
@@ -206,24 +189,45 @@ const server = http.createServer((req, res) => {
             body { background: #020617; color: white; font-family: sans-serif; }
             .progress-bar { height: 3px; background: #1e293b; border-radius: 2px; overflow: hidden; margin-top: 8px; }
             .progress-fill { height: 100%; background: #22c55e; transition: width 0.5s ease; }
+            .card-icon { position: absolute; right: 20px; top: 35px; font-size: 32px; opacity: 0.15; }
         </style></head>
         <body class="p-4 font-sans"><div class="max-w-xl mx-auto space-y-4">
-            <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/40 shadow-xl shadow-sky-500/10">
-                <div class="flex justify-between items-center">
-                    <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8">${userId.toUpperCase()}</h2><p class="text-[9px] ${meterColor} font-black uppercase tracking-widest mt-2">${meterText} INTENSITY</p></div>
-                    <div class="text-right"><div class="text-[10px] font-bold text-slate-500 uppercase">মোট লাভ</div><div class="text-3xl font-black text-green-400">৳${(user.profit * 124).toFixed(0)}</div></div>
+            
+            <!-- MASTER HEADER -->
+            <div class="p-6 bg-slate-900 rounded-[2rem] border border-sky-500/40 shadow-xl">
+                <div class="flex justify-between items-center mb-2">
+                    <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8">${userId.toUpperCase()}</h2><p class="text-[9px] ${meterColor} font-black uppercase tracking-widest mt-4">${meterText} INTENSITY ATTACK</p></div>
+                    <div class="bg-slate-800/50 p-2 rounded-2xl border border-green-500/20 text-center"><div class="text-[9px] font-bold text-slate-500">WALLET (BDT)</div><div class="text-2xl font-black text-green-400">৳${(user.profit * 124).toFixed(0)}</div></div>
                 </div>
-                ${isAdmin ? `<p class="text-[9px] text-yellow-500 font-bold uppercase mt-1 animate-pulse">👑 Admin Access</p>` : (active ? `<p class="text-[9px] text-green-400 font-bold uppercase mt-1">Active (${timeLeft.toFixed(1)}h left)</p>` : `<p class="text-[9px] text-red-500 font-bold uppercase mt-1">Expired</p>`)}
             </div>
 
+            <!-- PROFIT CARDS (আপনার প্রিয় ডিজাইন) -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl">
+                    <p class="text-[10px] text-slate-500 uppercase font-black">TOTAL PROFIT (USD)</p>
+                    <p class="text-4xl font-bold text-green-400 mt-2">$${user.profit.toFixed(2)}</p>
+                    <p class="text-xs text-slate-600 mt-1 italic">Life Time Gain</p>
+                    <div class="card-icon">💲</div>
+                </div>
+                <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl">
+                    <p class="text-[10px] text-slate-500 uppercase font-black">SUCCESS TRADES</p>
+                    <p class="text-4xl font-bold text-sky-400 mt-2">${user.count}</p>
+                    <p class="text-xs text-slate-600 mt-1 italic">Approximate Value</p>
+                    <div class="card-icon">💼</div>
+                </div>
+            </div>
+
+            <!-- PAUSE/RUN BUTTON -->
             <div class="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-800 flex justify-between items-center shadow-lg">
-                <span class="text-xs font-bold uppercase text-slate-400 italic">Trade Engine</span>
+                <span class="text-xs font-bold uppercase text-slate-400 italic">Trade Engine Status</span>
                 <button onclick="location.href='/toggle-trade?id=${userId}'" class="px-6 py-2 rounded-full font-black text-[10px] uppercase transition ${user.isPaused ? 'bg-red-500/20 text-red-500 border border-red-500' : 'bg-green-500/20 text-green-400 border border-green-500'}">
                     ${user.isPaused ? 'PAUSED' : 'RUNNING'}
                 </button>
             </div>
 
+            <!-- LIVE SLOTS (প্রগ্রেস বার সহ) -->
             <div class="p-6 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
+                <p class="text-[10px] text-slate-500 font-bold uppercase mb-4 tracking-widest text-center">● ACTIVE ATTACK SLOTS</p>
                 ${slots.map((s,i) => {
                     let progress = 0;
                     if(s.active && s.status === 'BOUGHT') progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
@@ -231,26 +235,15 @@ const server = http.createServer((req, res) => {
                     <div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50">
                         <div class="flex justify-between items-center">
                             <div><span class="text-[9px] font-bold text-slate-600 uppercase italic">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div>
-                            <div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black">SEARCHING</span>'}</div>
+                            <div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-500'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black uppercase">Scanning</span>'}</div>
                         </div>
                         ${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}
                     </div>`;
                 }).join('')}
             </div>
 
-            <div class="grid grid-cols-2 gap-4">
-                <div class="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 text-center relative overflow-hidden shadow-inner shadow-black/50">
-                    <p class="text-[10px] text-slate-500 uppercase font-black mb-1">Gain ($)</p><p class="text-2xl font-bold text-green-400">$${user.profit.toFixed(2)}</p>
-                    <div class="absolute right-2 bottom-1 text-xl opacity-10">💲</div>
-                </div>
-                <div class="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 text-center relative overflow-hidden shadow-inner shadow-black/50">
-                    <p class="text-[10px] text-slate-500 uppercase font-black mb-1">Trades</p><p class="text-2xl font-bold text-sky-400">${user.count}</p>
-                    <div class="absolute right-2 bottom-1 text-xl opacity-10">💼</div>
-                </div>
-            </div>
-
             <div class="text-center opacity-30"><button onclick="if(confirm('রিসেট করবেন? সব স্লট মুছে যাবে।')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
-        </div><script>if(${active}) setTimeout(()=>location.reload(), 5000);</script></body></html>`);
+        </div><script>setTimeout(()=>location.reload(), 4500);</script></body></html>`);
     }
 });
 
