@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ অ্যাডমিন মাস্টার কনফিগ (Preset)
+// 🛡️ অ্যাডমিন মাস্টার কনফিগ (প্রিসেট তথ্য)
 // ==========================================
 const ADMIN_USER = "naim1155"; 
 const ADMIN_PASS = "115510"; 
@@ -27,13 +27,14 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
+// 🎯 কয়েন পুল (যাতে ট্রেড না থামে)
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
     { s: "BONKUSDT", n: "BONK", d: 8, qd: 0 }, { s: "WIFUSDT", n: "WIF", d: 4, qd: 1 },
     { s: "DOGEUSDT", n: "DOGE", d: 5, qd: 0 }, { s: "NEARUSDT", n: "NEAR", d: 4, qd: 1 },
-    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "XRPUSDT", n: "XRP", d: 4, qd: 1 },
-    { s: "DOTUSDT", n: "DOT", d: 3, qd: 1 }, { s: "LINKUSDT", n: "LINK", d: 3, qd: 2 }
+    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "LINKUSDT", n: "LINK", d: 3, qd: 2 },
+    { s: "DOTUSDT", n: "DOT", d: 3, qd: 1 }, { s: "SUIUSDT", n: "SUI", d: 4, qd: 1 }
 ];
 
 let market = {};
@@ -103,10 +104,8 @@ async function startGlobalEngine() {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
 
-                // ২-মিনিট রিসাইকেল লজিক (আপনার ETH উদাহরণের সমাধান)
                 if (sl.status === 'WAITING' && (Date.now() - sl.waitTime > 120000)) {
-                    sl.active = false; sl.status = 'IDLE'; sl.sym = '';
-                    return;
+                    sl.active = false; sl.status = 'IDLE'; sl.sym = ''; return;
                 }
 
                 if (sl.status === 'WAITING' && s.p <= sl.buy) {
@@ -122,7 +121,8 @@ async function startGlobalEngine() {
                         const order = await placeOrder(sl.sym, "BUY", s.p.toFixed(COINS.find(c=>c.s===sl.sym).d), sl.qty, config);
                         if (order) {
                             sl.buy = (sl.buy + s.p) / 2; sl.qty = (parseFloat(sl.qty) * 2).toFixed(COINS.find(c=>c.s===sl.sym).qd);
-                            sl.sell = (sl.buy * 1.0007).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
+                            sl.sell = (sl.buy * 1.0006).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
+                            sendTG(`🛠 *DCA রিকাভারি সচল!* \nকয়েন: ${sl.sym} | লেয়ার: ${sl.dca}`, config.cid);
                         }
                     }
                     if (s.p >= sl.sell) {
@@ -130,14 +130,13 @@ async function startGlobalEngine() {
                         if (gain >= 0.01) {
                             sl.active = false; config.profit += gain; config.count += 1;
                             saveUser(userId, config);
-                            sendTG(`🎉 *${getOrdinal(config.count)} সেল* \nSELL SUCCESS ✅ (Slot ${sl.id+1})\nGain: $${gain.toFixed(2)} (৳${(gain*124).toFixed(0)}) 💰 মোট ৳${(config.profit*124).toFixed(0)}`, config.cid);
+                            sendTG(`🎉 *DONE!* ${sl.sym}\n💵 নিট লাভ: ৳${(gain*124).toFixed(0)}\n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
                             sl.status = 'IDLE'; sl.sym = '';
                         }
                     }
                 }
             });
 
-            // ২-টিক সুপার এন্ট্রি
             const slotIdx = slots.findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 2 && s.p < avgP) {
                 const sameCoin = slots.filter(sl => sl.active && sl.sym === msg.s);
@@ -155,7 +154,6 @@ async function startGlobalEngine() {
     });
 }
 
-// 🌐 মাস্টার ড্যাশবোর্ড UI (প্রিয় ডিজাইন + এপিআই ব্যালেন্স)
 const server = http.createServer((req, res) => {
     let db = getAllUsers();
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -178,31 +176,40 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
-        res.end(`<body style="background:#020617;color:white;font-family:sans-serif;text-align:center;padding-top:100px;"><h1>QUANTUM MASTER</h1><p>Log in with your ID.</p></body>`);
+        // 🔥 মেইন রেজিস্ট্রেশন ফর্ম (স্ক্রিনশটের সমাধান)
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-[#020617] text-white p-6 font-sans flex items-center min-h-screen text-center"><div class="max-w-md mx-auto space-y-6 w-full">
+            <h1 class="text-5xl font-black text-sky-400 italic">QUANTUM MASTER</h1>
+            <form action="/register" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 text-left shadow-2xl border border-sky-500/10">
+                <input name="id" placeholder="Create User ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-500" required>
+                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
+                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
+                <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
+                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white" required>
+                <div class="grid grid-cols-2 gap-3"><input name="cap" type="number" min="5" value="10" class="bg-black p-4 rounded-2xl text-white"><input name="lev" type="number" value="50" class="bg-black p-4 rounded-2xl text-white"></div>
+                <button class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg active:scale-95 transition">Launch Portal</button>
+            </form>
+        </div></body></html>`);
     } else {
         let user = db[userId];
         const isAdmin = (userId === ADMIN_USER);
         const active = isAdmin || (user.status === 'active');
         let slots = userSlots[userId] || Array(5).fill({sym:'Empty',status:'IDLE',active:false, pnl:0});
-        const avgMom = Object.values(market).reduce((a,b)=>a+b.mom, 0) / COINS.length;
-        let mColor = "text-slate-600"; let mText = "LOW";
-        if(avgMom > 15) { mColor = "text-sky-400"; mText = "MODERATE"; }
-        if(avgMom > 40) { mColor = "text-green-400"; mText = "HIGH"; }
-
+        
         getBinanceBalance(user).then(balance => {
             res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
             <style>body{background:#020617;color:white;font-family:sans-serif;}.progress-bar{height:3px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:8px;}.progress-fill{height:100%;background:#22c55e;transition:width 0.5s ease;}.card-icon{position:absolute;right:20px;top:35px;font-size:32px;opacity:0.15;}</style></head>
             <body class="p-4 font-sans"><div class="max-w-xl mx-auto space-y-4">
-                <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/40 shadow-xl shadow-sky-500/10">
-                    <div class="flex justify-between items-center">
-                        <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8 uppercase">${userId}</h2><p class="text-[9px] ${mColor} font-black uppercase tracking-widest mt-4 animate-pulse">${mText} INTENSITY ATTACK</p></div>
+                <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/40 shadow-xl">
+                    <div class="flex justify-between items-center mb-2">
+                        <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8 uppercase">${userId}</h2><p class="text-[9px] text-sky-400 font-black uppercase mt-4 tracking-widest animate-pulse">● System Sync: Online</p></div>
                         <div class="text-right"><div class="text-[9px] font-bold text-slate-500 uppercase">Binance Wallet</div><div class="text-3xl font-black text-green-400">$${balance}</div></div>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">TOTAL PROFIT (BDT)</p><p class="text-4xl font-bold text-green-400 mt-2">৳${(user.profit * 124).toFixed(0)}</p><p class="text-xs text-slate-600 mt-1 italic">Life Time Gain</p><div class="card-icon">💲</div></div>
-                    <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">SUCCESS TRADES</p><p class="text-4xl font-bold text-sky-400 mt-2">${user.count}</p><p class="text-xs text-slate-600 mt-1 italic">Approximate Value</p><div class="card-icon">💼</div></div>
+                    <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">TOTAL PROFIT (BDT)</p><p class="text-4xl font-bold text-green-400 mt-2">৳${(user.profit * 124).toFixed(0)}</p><div class="card-icon">💲</div></div>
+                    <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">SUCCESS TRADES</p><p class="text-4xl font-bold text-sky-400 mt-2">${user.count}</p><div class="card-icon">💼</div></div>
                 </div>
 
                 <div class="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-800 flex justify-between items-center shadow-lg"><span class="text-xs font-bold uppercase text-slate-400 italic font-black">Trade Engine Status</span><button onclick="location.href='/toggle-trade?id=${userId}'" class="px-6 py-2 rounded-full font-black text-[10px] uppercase transition ${user.isPaused ? 'bg-red-500/20 text-red-500 border border-red-500' : 'bg-green-500/20 text-green-400 border border-green-500'}">${user.isPaused ? 'PAUSED' : 'RUNNING'}</button></div>
@@ -210,16 +217,17 @@ const server = http.createServer((req, res) => {
                 <div class="p-6 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
                     ${slots.map((s,i) => {
                         let progress = 0; if(s.active && s.status === 'BOUGHT') progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
-                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase font-black">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase text-xs animate-pulse">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
+                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center transition-all ${s.active ? 'border-sky-500/20 shadow-lg' : ''}"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
                     }).join('')}
                 </div>
 
-                <div class="text-center opacity-30"><button onclick="if(confirm('Reset Master?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
+                <div class="text-center opacity-30"><button onclick="if(confirm('রিসেট করবেন? সব স্লট মুছে যাবে।')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
             </div><script>setTimeout(()=>location.reload(), 4500);</script></body></html>`);
         });
     }
 });
 
-server.listen(process.env.PORT || 8080, () => {
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, '0.0.0.0', () => {
     startGlobalEngine();
 });
