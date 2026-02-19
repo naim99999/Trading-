@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ অ্যাডমিন মাস্টার কনফিগ (Pre-set)
+// 🛡️ অ্যাডমিন মাস্টার কনফিগ (প্রিসেট)
 // ==========================================
 const ADMIN_USER = "naim1155"; 
 const ADMIN_PASS = "115510"; 
@@ -14,7 +14,7 @@ const ADMIN_CHAT_ID = "5279510350";
 const ADMIN_API = "zjZgsBWc77SC6xVxiY58HDZ1ToGLuS37A3Zw1GfxUnESoNyksw3weVoaiWTk5pec";
 const ADMIN_SEC = "YlvltwUt2LpP1WHDPST9WKNvj6bSJvjxn9nqZiz32JgJab6B9GJrREBg633qQGzn";
 
-const DB_FILE = 'nebula_final_db.json';
+const DB_FILE = 'nebula_v2000_db.json';
 const SETTINGS_FILE = 'global_settings.json';
 
 function getAllUsers() {
@@ -27,6 +27,7 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
+// 🎯 হাই-ভলিউম কয়েন পুল
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -47,19 +48,18 @@ function getOrdinal(n) {
     return n <= 10 ? ords[n] : n + "-তম";
 }
 
-// 💰 ব্যালেন্স চেক (Error Fix সহ)
+// 💰 ব্যালেন্স চেক (Safety Check সহ)
 async function getBinanceBalance(config) {
-    if (config.mode === 'demo' || !config.api || config.api === 'demo') return "Infinity (DEMO)";
+    if (config.mode === 'demo' || !config.api) return "Infinity (DEMO)";
     const ts = Date.now();
     const query = `timestamp=${ts}`;
     const signature = sign(query, config.sec);
     try {
         const res = await axios.get(`https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': config.api },
-            timeout: 5000
+            headers: { 'X-MBX-APIKEY': config.api }
         });
         if (res.data && res.data.totalWalletBalance) return parseFloat(res.data.totalWalletBalance).toFixed(2);
-        return "N/A";
+        return "0.00";
     } catch (e) { return "Connect Error"; }
 }
 
@@ -81,7 +81,7 @@ async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
     } catch (e) { return null; }
 }
 
-// 🚀 ওমনি এঞ্জিন
+// 🚀 এঞ্জিন কোর
 async function startGlobalEngine() {
     const streams = COINS.map(c => `${c.s.toLowerCase()}@ticker`).join('/');
     const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
@@ -93,7 +93,7 @@ async function startGlobalEngine() {
 
         const s = market[msg.s];
         s.lp = s.p; s.p = parseFloat(msg.c);
-        s.history.push(s.p); if(s.history.length > 30) s.history.shift();
+        s.history.push(s.p); if(s.history.length > 50) s.history.shift();
         const avgP = s.history.reduce((a,b)=>a+b, 0) / s.history.length;
 
         if (s.p > s.lp) { s.trend = Math.min(10, s.trend + 1); s.mom = Math.min(100, s.mom + 15); } 
@@ -102,7 +102,7 @@ async function startGlobalEngine() {
         const bdtTime = new Date(Date.now() + (6 * 60 * 60 * 1000));
         if (bdtTime.getUTCMinutes() % 10 === 0 && bdtTime.getUTCMinutes() !== lastReportMin) {
             let users = getAllUsers();
-            for(let id in users) if(users[id].status === 'active') sendTG(`📊 *১০-মিনিট প্রফিট আপডেট*\nবর্তমান মোট লাভ: ৳${(users[id].profit * 124).toFixed(0)}`, users[id].cid);
+            for(let id in users) if(users[id].status === 'active') sendTG(`📊 *১০-মিনিট প্রফিট আপডেট*\nমোট লাভ: ৳${(users[id].profit * 124).toFixed(0)}`, users[id].cid);
             lastReportMin = bdtTime.getUTCMinutes();
         }
 
@@ -123,7 +123,7 @@ async function startGlobalEngine() {
                 }
                 if (sl.status === 'WAITING' && s.p <= sl.buy) {
                     sl.status = 'BOUGHT';
-                    sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* (S${sl.id+1})\nকয়েন: *${sl.sym}*\nদাম: ${s.p}`, config.cid);
+                    sendTG(`📥 *বাই সম্পন্ন:* ${sl.sym} \n💵 দাম: ${s.p}`, config.cid);
                 }
 
                 if (sl.status === 'BOUGHT') {
@@ -135,6 +135,7 @@ async function startGlobalEngine() {
                         if (order) {
                             sl.buy = (sl.buy + s.p) / 2; sl.qty = (parseFloat(sl.qty) * 2).toFixed(COINS.find(c=>c.s===sl.sym).qd);
                             sl.sell = (sl.buy * 1.0007).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
+                            sendTG(`🛡️ *DCA Shield Active!* \nকয়েন: ${sl.sym} (L${sl.dca})`, config.cid);
                         }
                     }
                     if (s.p >= sl.sell) {
@@ -142,8 +143,7 @@ async function startGlobalEngine() {
                         if (gain >= 0.01) {
                             sl.active = false; config.profit += gain; config.count += 1;
                             saveUser(userId, config);
-                            const ord = getOrdinal(config.count);
-                            sendTG(`🎉 *${ord} সেল* \nSELL SUCCESS ✅ (Slot ${sl.id+1})\nGain: $${gain.toFixed(2)} (৳${(gain*124).toFixed(0)}) 💰 মোট ৳${(config.profit*124).toFixed(0)}`, config.cid);
+                            sendTG(`🎉 *SOLD SUCCESS!* ${sl.sym} \n💵 লাভ: ৳${(gain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
                             sl.status = 'IDLE'; sl.sym = '';
                         }
                     }
@@ -189,23 +189,23 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
+        // 🔥 মেইন ফর্ম (ডিজাইন ফিক্সড)
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
         <body class="bg-[#020617] text-white p-6 font-sans flex items-center min-h-screen text-center"><div class="max-w-md mx-auto space-y-6 w-full">
-            <h1 class="text-5xl font-black text-sky-400 italic underline decoration-sky-600 underline-offset-8 uppercase">Quantum Portal</h1>
+            <h1 class="text-5xl font-black text-sky-400 italic">QUANTUM MASTER</h1>
             <form action="/register" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 text-left shadow-2xl">
-                <input name="id" placeholder="User ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-600" required>
+                <input name="id" placeholder="Create User ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-600" required>
                 <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
                 <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none">
                 <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none">
                 <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none" required>
                 <div class="grid grid-cols-2 gap-3"><input name="cap" type="number" min="5" value="10" class="bg-black p-4 rounded-2xl text-white"><input name="lev" type="number" value="50" class="bg-black p-4 rounded-2xl text-white"></div>
-                <button class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg active:scale-95 transition">Launch Engine</button>
+                <button class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg active:scale-95 transition">Launch Portal</button>
             </form>
         </div></body></html>`);
     } else {
         let user = db[userId];
-        const isAdmin = (userId === ADMIN_USER);
-        const active = isAdmin || (user.status === 'active');
+        const active = (userId === ADMIN_USER) || (user.status === 'active');
         let slots = userSlots[userId] || Array(5).fill({sym:'Empty',status:'IDLE',active:false, pnl:0});
         const avgMom = Object.values(market).reduce((a,b)=>a+b.mom, 0) / COINS.length;
         let mColor = "text-slate-600"; let mText = "LOW";
@@ -233,7 +233,7 @@ const server = http.createServer((req, res) => {
                 <div class="p-6 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
                     ${slots.map((s,i) => {
                         let progress = 0; if(s.active && s.status === 'BOUGHT') progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
-                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center transition-all ${s.active ? 'border-sky-500/20 shadow-lg' : ''}"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase font-black">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase text-xs animate-pulse">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
+                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center transition-all ${s.active ? 'border-sky-500/20 shadow-lg' : ''}"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase text-xs animate-pulse">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
                     }).join('')}
                 </div>
 
