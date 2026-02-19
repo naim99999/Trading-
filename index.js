@@ -27,7 +27,6 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// 🎯 ৪০টি কয়েন পুল
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -48,17 +47,20 @@ function getOrdinal(n) {
     return n <= 10 ? ords[n] : n + "-তম";
 }
 
+// 💰 ব্যালেন্স চেক (Error Fix সহ)
 async function getBinanceBalance(config) {
-    if (config.mode === 'demo') return "Infinity";
+    if (config.mode === 'demo' || !config.api || config.api === 'demo') return "Infinity (DEMO)";
     const ts = Date.now();
     const query = `timestamp=${ts}`;
     const signature = sign(query, config.sec);
     try {
         const res = await axios.get(`https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': config.api }
+            headers: { 'X-MBX-APIKEY': config.api },
+            timeout: 5000
         });
-        return parseFloat(res.data.totalWalletBalance).toFixed(2);
-    } catch (e) { return "0.00"; }
+        if (res.data && res.data.totalWalletBalance) return parseFloat(res.data.totalWalletBalance).toFixed(2);
+        return "N/A";
+    } catch (e) { return "Connect Error"; }
 }
 
 async function sendTG(msg, chatId) {
@@ -133,7 +135,6 @@ async function startGlobalEngine() {
                         if (order) {
                             sl.buy = (sl.buy + s.p) / 2; sl.qty = (parseFloat(sl.qty) * 2).toFixed(COINS.find(c=>c.s===sl.sym).qd);
                             sl.sell = (sl.buy * 1.0007).toFixed(COINS.find(c=>c.s===sl.sym).d); sl.dca++; sl.lastBuy = s.p;
-                            sendTG(`🛠 *DCA রিকাভারি সচল!* \nকয়েন: ${sl.sym} | লেয়ার: ${sl.dca}`, config.cid);
                         }
                     }
                     if (s.p >= sl.sell) {
@@ -141,7 +142,8 @@ async function startGlobalEngine() {
                         if (gain >= 0.01) {
                             sl.active = false; config.profit += gain; config.count += 1;
                             saveUser(userId, config);
-                            sendTG(`🎉 *${getOrdinal(config.count)} সেল* \nSELL SUCCESS ✅ (Slot ${sl.id+1})\nGain: $${gain.toFixed(2)} (৳${(gain*124).toFixed(0)}) 💰 মোট ৳${(config.profit*124).toFixed(0)}`, config.cid);
+                            const ord = getOrdinal(config.count);
+                            sendTG(`🎉 *${ord} সেল* \nSELL SUCCESS ✅ (Slot ${sl.id+1})\nGain: $${gain.toFixed(2)} (৳${(gain*124).toFixed(0)}) 💰 মোট ৳${(config.profit*124).toFixed(0)}`, config.cid);
                             sl.status = 'IDLE'; sl.sym = '';
                         }
                     }
@@ -205,14 +207,18 @@ const server = http.createServer((req, res) => {
         const isAdmin = (userId === ADMIN_USER);
         const active = isAdmin || (user.status === 'active');
         let slots = userSlots[userId] || Array(5).fill({sym:'Empty',status:'IDLE',active:false, pnl:0});
-        
+        const avgMom = Object.values(market).reduce((a,b)=>a+b.mom, 0) / COINS.length;
+        let mColor = "text-slate-600"; let mText = "LOW";
+        if(avgMom > 15) { mColor = "text-sky-400"; mText = "MODERATE"; }
+        if(avgMom > 40) { mColor = "text-green-400"; mText = "HIGH"; }
+
         getBinanceBalance(user).then(balance => {
             res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
             <style>body{background:#020617;color:white;font-family:sans-serif;}.progress-bar{height:3px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:8px;}.progress-fill{height:100%;background:#22c55e;transition:width 0.5s ease;}.card-icon{position:absolute;right:20px;top:35px;font-size:32px;opacity:0.15;}</style></head>
             <body class="p-4 font-sans"><div class="max-w-xl mx-auto space-y-4">
                 <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/40 shadow-xl shadow-sky-500/10">
                     <div class="flex justify-between items-center mb-2">
-                        <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8 uppercase">${userId}</h2><p class="text-[9px] text-sky-400 font-black uppercase tracking-widest mt-4 animate-pulse">● System Sync: Online</p></div>
+                        <div><h2 class="text-3xl font-black italic underline decoration-sky-600 underline-offset-8 uppercase">${userId}</h2><p class="text-[9px] ${mColor} font-black uppercase tracking-widest mt-4 animate-pulse">${mText} INTENSITY ATTACK</p></div>
                         <div class="text-right"><div class="text-[9px] font-bold text-slate-500 uppercase">Binance Wallet</div><div class="text-3xl font-black text-green-400">$${balance}</div></div>
                     </div>
                 </div>
@@ -227,7 +233,7 @@ const server = http.createServer((req, res) => {
                 <div class="p-6 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
                     ${slots.map((s,i) => {
                         let progress = 0; if(s.active && s.status === 'BOUGHT') progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
-                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center transition-all ${s.active ? 'border-sky-500/20 shadow-lg' : ''}"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
+                        return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50 flex justify-between items-center transition-all ${s.active ? 'border-sky-500/20 shadow-lg' : ''}"><div><span class="text-[9px] font-bold text-slate-600 italic uppercase font-black">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div><div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(2)}% PNL</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase text-xs animate-pulse">Scanning</span>'}</div></div>${s.active && s.status === 'BOUGHT' ? `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>` : ''}`;
                     }).join('')}
                 </div>
 
