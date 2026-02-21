@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ অ্যাডমিন মাস্টার কনফিগ (Central Setup)
+// 🛡️ মাস্টার এডমিন কনফিগ (Central Setup)
 // ==========================================
 const ADMIN_USER = "naim1155"; 
 const ADMIN_PASS = "115510"; 
@@ -24,13 +24,14 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// 🎯 ৪০টি টপ ভলিউম কয়েন (ক্যাপিটাল বসে থাকবে না)
+// 🎯 ৪০টি টপ ভলিউম কয়েন
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
     { s: "BONKUSDT", n: "BONK", d: 8, qd: 0 }, { s: "WIFUSDT", n: "WIF", d: 4, qd: 1 },
     { s: "DOGEUSDT", n: "DOGE", d: 5, qd: 0 }, { s: "NEARUSDT", n: "NEAR", d: 4, qd: 1 },
-    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "LINKUSDT", n: "LINK", d: 3, qd: 2 }
+    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "XRPUSDT", n: "XRP", d: 4, qd: 1 },
+    { s: "BCHUSDT", n: "BCH", d: 2, qd: 3 }
 ];
 
 let market = {};
@@ -71,7 +72,7 @@ async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
     } catch (e) { return null; }
 }
 
-// 🚀 ওমনি ইঞ্জিন মাস্টার লজিক
+// 🚀 ওমনি মাস্টার ইঞ্জিন
 async function startGlobalEngine() {
     const streams = COINS.map(c => `${c.s.toLowerCase()}@ticker`).join('/');
     const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
@@ -94,21 +95,22 @@ async function startGlobalEngine() {
             let config = allUsers[userId];
             if (config.status !== 'active') continue;
 
-            if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 1, qty: 0, pnl: 0, lastBuy: 0, dca1: 0, dca2: 0, waitTime: 0, curP: 0 }));
+            if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 1, qty: 0, pnl: 0, dca1: 0, dca2: 0, waitTime: 0, curP: 0 }));
             let slots = userSlots[userId];
 
             slots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
 
+                // বাই সম্পন্ন হলে ৩টি প্রোটেকশন অর্ডার বাইন্যান্সে পাঠানো
                 if (sl.status === 'WAITING' && s.p <= sl.buy) {
                     sl.status = 'BOUGHT';
-                    sendTG(`📥 *বাই সম্পন্ন:* ${sl.sym}\nদাম: ${s.p}`, config.cid);
                     const coinInfo = COINS.find(c=>c.s===sl.sym);
-                    // ৩টি প্রোটেকশন অর্ডার বিন্যান্সে পাঠানো
                     await placeOrder(sl.sym, "SELL", sl.sell.toFixed(coinInfo.d), sl.qty, config, "LIMIT");
                     await placeOrder(sl.sym, "BUY", sl.dca1.toFixed(coinInfo.d), sl.qty, config, "LIMIT");
                     await placeOrder(sl.sym, "BUY", sl.dca2.toFixed(coinInfo.d), (parseFloat(sl.qty) * 2).toFixed(coinInfo.qd), config, "LIMIT");
+                    
+                    sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* \n💰 কয়েন: ${sl.sym} \n💵 দাম: ${s.p} \n🎯 টার্গেট: ${sl.sell} \n🛡️ DCA 1: ${sl.dca1} \n🛡️ DCA 2: ${sl.dca2}`, config.cid);
                 }
 
                 if (sl.status === 'BOUGHT') {
@@ -117,12 +119,13 @@ async function startGlobalEngine() {
                         const gain = (sl.qty * sl.sell) - (sl.qty * sl.buy) - (sl.qty * sl.sell * 0.0008);
                         sl.active = false; config.profit += gain; config.count += 1;
                         saveUser(userId, config);
-                        sendTG(`🎉 *DONE!* ${sl.sym} \nGain: ৳${(gain*124).toFixed(0)}`, config.cid);
+                        sendTG(`🎉 *DONE!* ${sl.sym} \n💵 নিট লাভ: ৳${(gain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
                         sl.status = 'IDLE'; sl.sym = '';
                     }
                 }
             });
 
+            // এন্ট্রি লজিক
             const slotIdx = slots.findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 2 && s.p < avgP) {
                 const sameCoin = slots.filter(sl => sl.active && sl.sym === msg.s);
@@ -130,12 +133,12 @@ async function startGlobalEngine() {
                     const coin = COINS.find(c => c.s === msg.s);
                     const buyP = (s.p * 0.9998).toFixed(coin.d); 
                     const sellP = (parseFloat(buyP) * 1.0012).toFixed(coin.d);
-                    const dca1P = (parseFloat(buyP) * 0.995).toFixed(coin.d);
-                    const dca2P = (parseFloat(buyP) * 0.988).toFixed(coin.d);
+                    const d1P = (parseFloat(buyP) * 0.995).toFixed(coin.d);
+                    const d2P = (parseFloat(buyP) * 0.988).toFixed(coin.d);
                     const qty = ((config.cap / 5 * config.lev) / parseFloat(buyP)).toFixed(coin.qd);
 
                     const order = await placeOrder(msg.s, "BUY", buyP, qty, config, "LIMIT");
-                    if (order) slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), dca1: parseFloat(dca1P), dca2: parseFloat(dca2P), qty: qty, pnl: 0, waitTime: Date.now(), curP: s.p };
+                    if (order) slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), dca1: parseFloat(d1P), dca2: parseFloat(d2P), qty: qty, pnl: 0, waitTime: Date.now(), curP: s.p };
                 }
             }
         }
@@ -158,7 +161,7 @@ const server = http.createServer((req, res) => {
     }
     if (url.pathname === '/register') {
         const id = url.searchParams.get('id');
-        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||50, mode: url.searchParams.get('mode')||'live', profit: 0, count: 0, status: (id === ADMIN_USER)?'active':'pending', expiry: (id === ADMIN_USER)?new Date(2099,1,1).toISOString():new Date().toISOString(), isPaused: false });
+        saveUser(id, { api: url.searchParams.get('api')||'demo', sec: url.searchParams.get('sec')||'demo', cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||50, mode: url.searchParams.get('mode')||'live', profit: 0, count: 0, status: (id === ADMIN_USER)?'active':'pending', expiry: (id === ADMIN_USER)?new Date(2099,1,1).toISOString():new Date().toISOString(), isPaused: false });
         res.writeHead(302, { 'Location': '/' + id }); return res.end();
     }
 
@@ -168,13 +171,12 @@ const server = http.createServer((req, res) => {
         <body class="bg-[#020617] text-white p-6 font-sans flex items-center min-h-screen text-center"><div class="max-w-md mx-auto space-y-6 w-full">
             <h1 class="text-5xl font-black text-sky-400 italic">QUANTUM MASTER</h1>
             <form action="/register" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 text-left shadow-2xl">
-                <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none" required>
+                <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-600" required>
                 <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
-                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
-                <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white">
-                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white" required>
+                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none"><input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none">
+                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none" required>
                 <div class="grid grid-cols-2 gap-3"><input name="cap" type="number" min="1" value="10" class="bg-black p-4 rounded-2xl text-white"><input name="lev" type="number" value="50" class="bg-black p-4 rounded-2xl text-white"></div>
-                <button class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg">Launch Engine</button>
+                <button type="submit" class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg active:scale-95 transition">Launch Engine</button>
             </form></div></body></html>`);
     } else {
         let user = db[userId];
@@ -189,14 +191,11 @@ const server = http.createServer((req, res) => {
                     <div><h2 class="text-3xl font-black italic underline decoration-sky-600 uppercase">${userId}</h2><p class="text-[9px] font-black uppercase tracking-widest mt-4 animate-pulse text-sky-400">● System Sync: Online</p></div>
                     <div class="text-right"><div class="text-[9px] font-bold text-slate-500 uppercase">Binance Wallet</div><div class="text-3xl font-black text-green-400">$${balance}</div></div>
                 </div>
-
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">TOTAL PROFIT (BDT)</p><p class="text-4xl font-bold text-green-400 mt-2">৳${(user.profit * 124).toFixed(0)}</p><div class="card-icon">💼</div></div>
                     <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">SUCCESS TRADES</p><p class="text-4xl font-bold text-sky-400 mt-2">${user.count}</p><div class="card-icon">💲</div></div>
                 </div>
-
                 <div class="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-800 flex justify-between items-center shadow-lg"><span class="text-xs font-bold uppercase text-slate-400 italic">Trade Engine Status</span><button onclick="location.href='/toggle-trade?id=${userId}'" class="px-6 py-2 rounded-full font-black text-[10px] uppercase transition ${user.isPaused ? 'bg-red-500/20 text-red-500 border border-red-500' : 'bg-green-500/20 text-green-400 border border-green-500'}">${user.isPaused ? 'PAUSED' : 'RUNNING'}</button></div>
-
                 <div class="p-4 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
                     ${slots.map((s,i) => {
                         let progress = 0; if(s.active && s.status === 'BOUGHT' && s.buy && s.sell) progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
@@ -208,10 +207,10 @@ const server = http.createServer((req, res) => {
                             </div>
                             ${s.active && s.status === 'BOUGHT' ? `
                                 <div class="grid grid-cols-2 gap-x-2 text-[8px] text-slate-500 uppercase font-bold mt-1">
-                                    <span>Buy: ${s.buy.toFixed(cD)}</span>
-                                    <span class="text-right">Live: ${s.curP.toFixed(cD)}</span>
+                                    <span class="text-slate-400">Buy: ${s.buy.toFixed(cD)}</span>
+                                    <span class="text-right text-sky-300">Live: ${s.curP.toFixed(cD)}</span>
                                     <span class="text-red-400">DCA 1: ${s.dca1.toFixed(cD)}</span>
-                                    <span class="text-right text-green-400">Target: ${s.sell.toFixed(cD)}</span>
+                                    <span class="text-right text-green-500">Target: ${s.sell.toFixed(cD)}</span>
                                     <span class="text-red-600">DCA 2: ${s.dca2.toFixed(cD)}</span>
                                 </div>
                                 <div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>
@@ -219,7 +218,7 @@ const server = http.createServer((req, res) => {
                         </div>`;
                     }).join('')}
                 </div>
-                <div class="text-center opacity-30"><button onclick="if(confirm('Reset Master?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
+                <div class="text-center opacity-30"><button onclick="if(confirm('Reset Everything?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
             </div><script>setTimeout(()=>location.reload(), 5000);</script></body></html>`);
         });
     }
