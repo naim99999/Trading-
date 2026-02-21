@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ মাস্টার এডমিন কনফিগ (Central Setup)
+// 🛡️ অ্যাডমিন মাস্টার কনফিগ
 // ==========================================
 const ADMIN_USER = "naim1155"; 
 const ADMIN_PASS = "115510"; 
@@ -24,14 +24,13 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// 🎯 ৪০টি টপ ভলিউম কয়েন
+// 🎯 কয়েন পুল
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
     { s: "BONKUSDT", n: "BONK", d: 8, qd: 0 }, { s: "WIFUSDT", n: "WIF", d: 4, qd: 1 },
     { s: "DOGEUSDT", n: "DOGE", d: 5, qd: 0 }, { s: "NEARUSDT", n: "NEAR", d: 4, qd: 1 },
-    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "XRPUSDT", n: "XRP", d: 4, qd: 1 },
-    { s: "BCHUSDT", n: "BCH", d: 2, qd: 3 }
+    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "XRPUSDT", n: "XRP", d: 4, qd: 1 }
 ];
 
 let market = {};
@@ -54,8 +53,13 @@ async function getBinanceBalance(config) {
     } catch (e) { return "Error"; }
 }
 
-async function sendTG(msg, chatId) {
-    try { await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, { chat_id: chatId, text: msg, parse_mode: 'Markdown' }); } catch (e) {}
+async function sendTG(msg, chatId, replyToId = null) {
+    try {
+        const payload = { chat_id: chatId, text: msg, parse_mode: 'Markdown' };
+        if (replyToId) payload.reply_to_message_id = replyToId;
+        const res = await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, payload);
+        return res.data.result.message_id;
+    } catch (e) { return null; }
 }
 
 async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
@@ -72,7 +76,7 @@ async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
     } catch (e) { return null; }
 }
 
-// 🚀 ওমনি মাস্টার ইঞ্জিন
+// 🚀 হাই-ভেলোসিটি এঞ্জিন
 async function startGlobalEngine() {
     const streams = COINS.map(c => `${c.s.toLowerCase()}@ticker`).join('/');
     const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
@@ -95,14 +99,13 @@ async function startGlobalEngine() {
             let config = allUsers[userId];
             if (config.status !== 'active') continue;
 
-            if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 1, qty: 0, pnl: 0, dca1: 0, dca2: 0, waitTime: 0, curP: 0 }));
+            if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 1, qty: 0, pnl: 0, dca1: 0, dca2: 0, waitTime: 0, curP: 0, mid: null }));
             let slots = userSlots[userId];
 
             slots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
 
-                // বাই সম্পন্ন হলে ৩টি প্রোটেকশন অর্ডার বাইন্যান্সে পাঠানো
                 if (sl.status === 'WAITING' && s.p <= sl.buy) {
                     sl.status = 'BOUGHT';
                     const coinInfo = COINS.find(c=>c.s===sl.sym);
@@ -110,17 +113,27 @@ async function startGlobalEngine() {
                     await placeOrder(sl.sym, "BUY", sl.dca1.toFixed(coinInfo.d), sl.qty, config, "LIMIT");
                     await placeOrder(sl.sym, "BUY", sl.dca2.toFixed(coinInfo.d), (parseFloat(sl.qty) * 2).toFixed(coinInfo.qd), config, "LIMIT");
                     
-                    sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* \n💰 কয়েন: ${sl.sym} \n💵 দাম: ${s.p} \n🎯 টার্গেট: ${sl.sell} \n🛡️ DCA 1: ${sl.dca1} \n🛡️ DCA 2: ${sl.dca2}`, config.cid);
+                    // বাই মেসেজ উইথ স্লট নম্বর
+                    const mid = await sendTG(`📥 *বাই সম্পন্ন করা হয়েছে!* \n📌 স্লট: #${sl.id+1} \n💰 কয়েন: *${sl.sym}* \n💵 দাম: ${s.p} \n🎯 টার্গেট: ${sl.sell} \n🛡️ DCA 1: ${sl.dca1}`, config.cid);
+                    sl.mid = mid; 
                 }
 
                 if (sl.status === 'BOUGHT') {
                     sl.pnl = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
-                    if (s.p >= sl.sell) {
-                        const gain = (sl.qty * sl.sell) - (sl.qty * sl.buy) - (sl.qty * sl.sell * 0.0008);
-                        sl.active = false; config.profit += gain; config.count += 1;
-                        saveUser(userId, config);
-                        sendTG(`🎉 *DONE!* ${sl.sym} \n💵 নিট লাভ: ৳${(gain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid);
-                        sl.status = 'IDLE'; sl.sym = '';
+                    
+                    // সেল প্রাইজ চালাকি: মার্কেট মুভমেন্ট দেখে ফাস্ট এক্সিট
+                    let dynamicSell = sl.sell;
+                    if(s.trend === 0 && sl.pnl >= 3.0) dynamicSell = s.p; // মার্কেট স্লো হলে ৩% লাভে বের হয়ে যাবে
+
+                    if (s.p >= dynamicSell) {
+                        const gain = (sl.qty * s.p) - (sl.qty * sl.buy) - (sl.qty * s.p * 0.0008);
+                        if (gain >= 0.01) {
+                            sl.active = false; config.profit += gain; config.count += 1;
+                            saveUser(userId, config);
+                            // সেল মেসেজ রিপ্লাই টু বাই মেসেজ
+                            sendTG(`🎉 *DONE!* ${sl.sym} \n💵 নিট লাভ: ৳${(gain*124).toFixed(0)} \n📈 মোট: ৳${(config.profit*124).toFixed(0)}`, config.cid, sl.mid);
+                            sl.status = 'IDLE'; sl.sym = '';
+                        }
                     }
                 }
             });
@@ -138,7 +151,7 @@ async function startGlobalEngine() {
                     const qty = ((config.cap / 5 * config.lev) / parseFloat(buyP)).toFixed(coin.qd);
 
                     const order = await placeOrder(msg.s, "BUY", buyP, qty, config, "LIMIT");
-                    if (order) slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), dca1: parseFloat(d1P), dca2: parseFloat(d2P), qty: qty, pnl: 0, waitTime: Date.now(), curP: s.p };
+                    if (order) slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), dca1: parseFloat(d1P), dca2: parseFloat(d2P), qty: qty, pnl: 0, waitTime: Date.now(), curP: s.p, mid: null };
                 }
             }
         }
@@ -171,7 +184,7 @@ const server = http.createServer((req, res) => {
         <body class="bg-[#020617] text-white p-6 font-sans flex items-center min-h-screen text-center"><div class="max-w-md mx-auto space-y-6 w-full">
             <h1 class="text-5xl font-black text-sky-400 italic">QUANTUM MASTER</h1>
             <form action="/register" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 text-left shadow-2xl">
-                <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-600" required>
+                <input name="id" placeholder="Create User ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none focus:border-sky-600" required>
                 <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
                 <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none"><input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none">
                 <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 text-white outline-none" required>
@@ -183,19 +196,38 @@ const server = http.createServer((req, res) => {
         const isAdmin = (userId === ADMIN_USER);
         let slots = userSlots[userId] || Array(5).fill({sym:'Empty',status:'IDLE',active:false, pnl:0, curP:0, buy:0, sell:1, dca1:0, dca2:0});
         
+        // মার্কেট মিটার লজিক
+        const avgMom = Object.values(market).reduce((a,b)=>a+(b.mom||0), 0) / COINS.length;
+        let mColor = "bg-slate-600"; let mText = "STABLE";
+        if(avgMom > 15) { mColor = "bg-sky-500"; mText = "MODERATE"; }
+        if(avgMom > 35) { mColor = "bg-green-500"; mText = "HIGH ATTACK"; }
+
         getBinanceBalance(user).then(balance => {
             res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
             <style>body{background:#020617;color:white;font-family:sans-serif;}.progress-bar{height:3px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:8px;}.progress-fill{height:100%;background:#22c55e;transition:width 0.5s ease;}.card-icon{position:absolute;right:20px;top:35px;font-size:32px;opacity:0.15;}</style></head>
             <body class="p-4 font-sans"><div class="max-w-xl mx-auto space-y-4">
+                
+                <!-- MARKET ANALYSIS METER (NEW) -->
+                <div class="bg-slate-900/50 p-4 rounded-3xl border border-slate-800 flex justify-between items-center">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Market Analysis Meter</span>
+                    <div class="flex items-center gap-2">
+                        <div class="w-20 h-2 bg-slate-800 rounded-full overflow-hidden"><div class="h-full ${mColor}" style="width: ${Math.max(20, avgMom)}%"></div></div>
+                        <span class="text-[9px] font-black ${mColor.replace('bg','text')}">${mText}</span>
+                    </div>
+                </div>
+
                 <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/40 shadow-xl flex justify-between items-center">
-                    <div><h2 class="text-3xl font-black italic underline decoration-sky-600 uppercase">${userId}</h2><p class="text-[9px] font-black uppercase tracking-widest mt-4 animate-pulse text-sky-400">● System Sync: Online</p></div>
+                    <div><h2 class="text-3xl font-black italic underline decoration-sky-600 uppercase">${userId}</h2><p class="text-[9px] font-black uppercase tracking-widest mt-2 animate-pulse text-sky-400">● System Sync: Online</p></div>
                     <div class="text-right"><div class="text-[9px] font-bold text-slate-500 uppercase">Binance Wallet</div><div class="text-3xl font-black text-green-400">$${balance}</div></div>
                 </div>
+                
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">TOTAL PROFIT (BDT)</p><p class="text-4xl font-bold text-green-400 mt-2">৳${(user.profit * 124).toFixed(0)}</p><div class="card-icon">💼</div></div>
                     <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800 relative overflow-hidden shadow-2xl"><p class="text-[10px] text-slate-500 uppercase font-black">SUCCESS TRADES</p><p class="text-4xl font-bold text-sky-400 mt-2">${user.count}</p><div class="card-icon">💲</div></div>
                 </div>
+                
                 <div class="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-800 flex justify-between items-center shadow-lg"><span class="text-xs font-bold uppercase text-slate-400 italic">Trade Engine Status</span><button onclick="location.href='/toggle-trade?id=${userId}'" class="px-6 py-2 rounded-full font-black text-[10px] uppercase transition ${user.isPaused ? 'bg-red-500/20 text-red-500 border border-red-500' : 'bg-green-500/20 text-green-400 border border-green-500'}">${user.isPaused ? 'PAUSED' : 'RUNNING'}</button></div>
+                
                 <div class="p-4 bg-zinc-900/50 rounded-[2.5rem] border border-zinc-800 space-y-3 shadow-inner">
                     ${slots.map((s,i) => {
                         let progress = 0; if(s.active && s.status === 'BOUGHT' && s.buy && s.sell) progress = Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100));
@@ -203,22 +235,19 @@ const server = http.createServer((req, res) => {
                         return `<div class="p-4 bg-black/40 rounded-2xl border border-zinc-800/50">
                             <div class="flex justify-between items-center mb-1">
                                 <div><span class="text-[9px] font-bold text-slate-600 uppercase italic">Slot ${i+1}</span><p class="text-sm font-black ${s.active ? 'text-sky-400' : 'text-zinc-800'}">${s.active ? s.sym.replace('USDT','') : 'IDLE'}</p></div>
-                                <div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(1)}%</span>` : ''}</div>
+                                <div class="text-right">${s.active ? `<span class="text-xs font-bold ${s.pnl>=0?'text-green-500':'text-red-400'}">${s.pnl.toFixed(1)}%</span>` : '<span class="text-[9px] text-zinc-700 font-black tracking-widest uppercase text-xs animate-pulse">Scanning</span>'}</div>
                             </div>
                             ${s.active && s.status === 'BOUGHT' ? `
                                 <div class="grid grid-cols-2 gap-x-2 text-[8px] text-slate-500 uppercase font-bold mt-1">
-                                    <span class="text-slate-400">Buy: ${s.buy.toFixed(cD)}</span>
-                                    <span class="text-right text-sky-300">Live: ${s.curP.toFixed(cD)}</span>
-                                    <span class="text-red-400">DCA 1: ${s.dca1.toFixed(cD)}</span>
-                                    <span class="text-right text-green-500">Target: ${s.sell.toFixed(cD)}</span>
-                                    <span class="text-red-600">DCA 2: ${s.dca2.toFixed(cD)}</span>
+                                    <span>Buy: ${s.buy.toFixed(cD)}</span><span class="text-right text-sky-300">Live: ${s.curP.toFixed(cD)}</span>
+                                    <span class="text-red-400">DCA 1: ${s.dca1.toFixed(cD)}</span><span class="text-right text-green-500">Target: ${s.sell.toFixed(cD)}</span>
                                 </div>
                                 <div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div>
                             ` : ''}
                         </div>`;
                     }).join('')}
                 </div>
-                <div class="text-center opacity-30"><button onclick="if(confirm('Reset Everything?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
+                <div class="text-center opacity-30"><button onclick="if(confirm('Reset Master?')) location.href='/reset-now?id=${userId}'" class="text-[9px] text-red-500 font-bold uppercase underline underline-offset-4 tracking-widest">Reset Master Core</button></div>
             </div><script>setTimeout(()=>location.reload(), 5000);</script></body></html>`);
         });
     }
