@@ -20,7 +20,7 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// ২০টি শক্তিশালী কয়েন (বেশি মুভমেন্ট করে এমন)
+// ২০টি শক্তিশালী কয়েন
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -39,6 +39,52 @@ COINS.forEach(c => market[c.s] = { p: 0, lp: 0, trend: 0, history: [] });
 let userSlots = {}; 
 
 function sign(q, secret) { return crypto.createHmac('sha256', secret).update(q).digest('hex'); }
+
+async function setLeverage(symbol, leverage, config) {
+    if (config.mode === 'demo') return true;
+    const ts = Date.now();
+    const query = `symbol=${symbol}&leverage=${leverage}&timestamp=${ts}`;
+    const signature = sign(query, config.sec);
+    try {
+        await axios.post(`https://fapi.binance.com/fapi/v1/leverage?${query}&signature=${signature}`, null, {
+            headers: { 'X-MBX-APIKEY': config.api }
+        });
+        return true;
+    } catch (e) { return false; }
+}
+
+async function getBinanceBalance(config) {
+    if (config.mode === 'demo' || !config.api) return "1000.00 (DEMO)";
+    const ts = Date.now();
+    const query = `timestamp=${ts}`;
+    const signature = sign(query, config.sec);
+    try {
+        const res = await axios.get(`https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`, {
+            headers: { 'X-MBX-APIKEY': config.api }, timeout: 5000
+        });
+        return res.data ? parseFloat(res.data.totalWalletBalance).toFixed(2) : "0.00";
+    } catch (e) { return "Connect API"; }
+}
+
+async function sendTG(msg, chatId) {
+    try {
+        await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
+    } catch (e) { }
+}
+
+async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
+    if (config.mode === 'demo') return { orderId: 'DEMO_123' };
+    const ts = Date.now();
+    let query = `symbol=${symbol}&side=${side}&type=${type}&quantity=${qty}&timestamp=${ts}`;
+    if(type === "LIMIT") query += `&price=${price}&timeInForce=GTC`;
+    const signature = sign(query, config.sec);
+    try {
+        const res = await axios.post(`https://fapi.binance.com/fapi/v1/order?${query}&signature=${signature}`, null, {
+            headers: { 'X-MBX-APIKEY': config.api }
+        });
+        return res.data;
+    } catch (e) { return null; }
+}
 
 async function startGlobalEngine() {
     const streams = COINS.map(c => `${c.s.toLowerCase()}@ticker`).join('/');
@@ -59,126 +105,161 @@ async function startGlobalEngine() {
         for (let userId in allUsers) {
             let config = allUsers[userId];
             if (!userSlots[userId]) userSlots[userId] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 0, qty: 0, pnl: 0, curP: 0 }));
-            
-            userSlots[userId].forEach(async (sl) => {
+            let slots = userSlots[userId];
+
+            slots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
+
+                if (sl.status === 'WAITING' && s.p <= sl.buy) {
+                    sl.status = 'BOUGHT';
+                    const cI = COINS.find(c=>c.s===sl.sym);
+                    await placeOrder(sl.sym, "SELL", sl.sell.toFixed(cI.d), sl.qty, config, "LIMIT");
+                    sendTG(`📥 *বাই সম্পন্ন:* ${sl.sym}\nপ্রাইস: ${s.p}\nটার্গেট: ${sl.sell}`, config.cid);
+                }
+
                 if (sl.status === 'BOUGHT') {
                     sl.pnl = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
                     if (s.p >= sl.sell) {
-                        sl.active = false; config.profit += (sl.qty * sl.sell) - (sl.qty * sl.buy); 
-                        config.count += 1; saveUser(userId, config); sl.status = 'IDLE';
+                        const gain = (sl.qty * sl.sell) - (sl.qty * sl.buy);
+                        sl.active = false; config.profit += gain; config.count += 1;
+                        saveUser(userId, config);
+                        sendTG(`🎉 *সেল সম্পন্ন!* ${sl.sym}\nলাভ: ৳${(gain*124).toFixed(0)}`, config.cid);
+                        sl.status = 'IDLE';
                     }
                 }
             });
+
+            const slotIdx = slots.findIndex(sl => !sl.active);
+            if (!config.isPaused && slotIdx !== -1 && s.trend >= 3 && s.p < avgP) {
+                const sameCoin = slots.filter(sl => sl.active && sl.sym === msg.s);
+                if (sameCoin.length === 0) {
+                    const coin = COINS.find(c => c.s === msg.s);
+                    const buyP = (s.p * 0.9995).toFixed(coin.d); 
+                    const sellP = (parseFloat(buyP) * 1.0045).toFixed(coin.d);
+                    const qty = ((config.cap / 5 * config.lev) / parseFloat(buyP)).toFixed(coin.qd);
+                    
+                    await setLeverage(msg.s, config.lev, config);
+                    const order = await placeOrder(msg.s, "BUY", buyP, qty, config, "LIMIT");
+                    if (order) {
+                        slots[slotIdx] = { id: slotIdx, active: true, status: 'WAITING', sym: msg.s, buy: parseFloat(buyP), sell: parseFloat(sellP), qty: qty, pnl: 0, curP: s.p };
+                    }
+                }
+            }
         }
     });
 }
 
-// 🌐 API Server (Page + JSON Data API)
 const server = http.createServer(async (req, res) => {
     let db = getAllUsers();
     const url = new URL(req.url, `http://${req.headers.host}`);
     const userId = url.pathname.slice(1);
 
-    // ১. মিলি-সেকেন্ড ডাটা আপডেট API (এইটা ফ্রন্টএন্ড কল করবে)
     if (url.pathname === '/api/data') {
         const uid = url.searchParams.get('id');
         let avgTrend = 0; COINS.forEach(c => avgTrend += market[c.s].trend);
         let sentiment = Math.min(100, (avgTrend / (COINS.length * 5)) * 100);
-        
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({
-            sentiment,
-            slots: userSlots[uid] || [],
-            profit: db[uid] ? (db[uid].profit * 124).toFixed(0) : 0,
-            count: db[uid] ? db[uid].count : 0
-        }));
+        return res.end(JSON.stringify({ sentiment, slots: userSlots[uid] || [], profit: db[uid] ? (db[uid].profit * 124).toFixed(0) : 0, count: db[uid] ? db[uid].count : 0 }));
     }
 
-    // ২. মেইন ড্যাশবোর্ড HTML
+    if (url.pathname === '/reset') {
+        const id = url.searchParams.get('id');
+        if (db[id]) { db[id].profit = 0; db[id].count = 0; saveUser(id, db[id]); userSlots[id] = Array(5).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, sell: 0, qty: 0, pnl: 0, curP: 0 })); }
+        res.writeHead(302, { 'Location': '/' + id }); return res.end();
+    }
+
+    if (url.pathname === '/register') {
+        const id = url.searchParams.get('id');
+        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, mode: url.searchParams.get('mode')||'live', profit: 0, count: 0, isPaused: false });
+        res.writeHead(302, { 'Location': '/' + id }); return res.end();
+    }
+
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
-        res.end(`Registration form goes here (Same as before)...`);
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen"><div class="max-w-md mx-auto w-full space-y-6">
+            <h1 class="text-4xl font-black text-sky-400 text-center uppercase tracking-tighter">Quantum Setup</h1>
+            <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 shadow-2xl border border-slate-800">
+                <input name="id" placeholder="User Name (ex: naim11)" class="w-full bg-black p-4 rounded-2xl border border-slate-800" required>
+                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
+                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800">
+                <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800">
+                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800" required>
+                <div class="grid grid-cols-2 gap-3">
+                    <input name="cap" type="number" placeholder="Capital ($)" class="bg-black p-4 rounded-2xl border border-slate-800">
+                    <input name="lev" type="number" placeholder="Leverage (ex: 20)" class="bg-black p-4 rounded-2xl border border-slate-800">
+                </div>
+                <button type="submit" class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg">Start System</button>
+            </form></div></body></html>`);
     } else {
-        res.end(`<!DOCTYPE html><html><head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <style>
-            .gauge-container { position: relative; width: 180px; height: 90px; margin: 0 auto; overflow: hidden; }
-            .gauge-bg { width: 180px; height: 180px; border-radius: 50%; background: conic-gradient(#ef4444 0% 30%, #facc15 30% 70%, #22c55e 70% 100%); mask: radial-gradient(circle, transparent 65%, black 66%); -webkit-mask: radial-gradient(circle, transparent 65%, black 66%); }
-            #needle { position: absolute; bottom: 0; left: 50%; width: 3px; height: 70px; background: white; transform-origin: bottom center; transform: translateX(-50%) rotate(-90deg); transition: transform 0.5s ease-out; }
-        </style>
-        </head>
-        <body class="bg-[#020617] text-white p-4">
-            <div class="max-w-xl mx-auto space-y-4">
-                
-                <!-- সেন্টিমেন্ট মিটার -->
-                <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 text-center">
-                    <div class="gauge-container"><div class="gauge-bg"></div><div id="needle"></div></div>
-                    <h3 id="statusText" class="text-lg font-black mt-2 uppercase text-yellow-400">Neutral Market</h3>
-                    <p id="instruction" class="text-[10px] text-slate-400 leading-tight">স্ক্যানিং মার্কেট...</p>
-                </div>
-
-                <!-- স্ট্যাটাস কার্ড -->
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
-                        <p class="text-[9px] text-slate-500 font-bold uppercase">Total Profit</p>
-                        <p class="text-xl font-black text-green-400">৳<span id="profitText">0</span></p>
+        let user = db[userId];
+        getBinanceBalance(user).then(balance => {
+            res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
+            <style>
+                .gauge-container { position: relative; width: 180px; height: 90px; margin: 0 auto; overflow: hidden; }
+                .gauge-bg { width: 180px; height: 180px; border-radius: 50%; background: conic-gradient(#ef4444 0% 30%, #facc15 30% 70%, #22c55e 70% 100%); mask: radial-gradient(circle, transparent 65%, black 66%); -webkit-mask: radial-gradient(circle, transparent 65%, black 66%); }
+                #needle { position: absolute; bottom: 0; left: 50%; width: 3px; height: 70px; background: white; transform-origin: bottom center; transform: translateX(-50%) rotate(-90deg); transition: transform 0.5s ease-out; }
+            </style></head>
+            <body class="bg-[#020617] text-white p-4">
+                <div class="max-w-xl mx-auto space-y-4">
+                    <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 text-center">
+                        <div class="gauge-container"><div class="gauge-bg"></div><div id="needle"></div></div>
+                        <h3 id="statusText" class="text-lg font-black mt-2 uppercase text-yellow-400">Neutral Market</h3>
+                        <p id="instruction" class="text-[10px] text-slate-400">স্ক্যানিং মার্কেট...</p>
                     </div>
-                    <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
-                        <p class="text-[9px] text-slate-500 font-bold uppercase">Success Trades</p>
-                        <p class="text-xl font-black text-sky-400" id="countText">0</p>
+                    <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-sky-500/30 flex justify-between items-center">
+                        <div><h2 class="text-2xl font-black text-sky-400 uppercase">${userId}</h2><p class="text-[10px] text-slate-500">LEV: ${user.lev}x • CAP: $${user.cap}</p></div>
+                        <div class="text-right text-green-400 font-black text-xl">$${balance}</div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
+                            <p class="text-[9px] text-slate-500 uppercase font-bold">Total Profit</p>
+                            <p class="text-xl font-black text-green-400">৳<span id="profitText">0</span></p>
+                        </div>
+                        <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
+                            <p class="text-[9px] text-slate-500 uppercase font-bold">Trades</p>
+                            <p class="text-xl font-black text-sky-400" id="countText">0</p>
+                        </div>
+                    </div>
+                    <div id="slotContainer" class="space-y-3"></div>
+                    <div class="pt-4 flex gap-3">
+                        <a href="/reset?id=${userId}" class="flex-1 bg-red-900/20 border border-red-500/30 text-red-500 py-4 rounded-[2rem] text-center text-[10px] font-black uppercase">Reset</a>
+                        <button onclick="location.reload()" class="flex-1 bg-sky-600 py-4 rounded-[2rem] text-[10px] font-black uppercase">Refresh</button>
                     </div>
                 </div>
-
-                <!-- স্লট লিস্ট -->
-                <div id="slotContainer" class="space-y-3"></div>
-
-            </div>
-
-            <script>
-                async function updateData() {
-                    try {
-                        const res = await fetch('/api/data?id=${userId}');
-                        const data = await res.json();
-                        
-                        // মিটার আপডেট
-                        const rotation = (data.sentiment * 1.8) - 90;
-                        document.getElementById('needle').style.transform = 'translateX(-50%) rotate('+rotation+'deg)';
-                        
-                        let inst = "মার্কেট স্থিতিশীল।";
-                        if(data.sentiment < 35) inst = "মার্কেট অনেক নিচে। সাবধানে বাই অর্ডার দিন।";
-                        else if(data.sentiment > 65) inst = "মার্কেট হাই বুলিশ! প্রফিট নেওয়ার সময়।";
-                        document.getElementById('instruction').innerText = inst;
-
-                        // টেক্সট আপডেট
-                        document.getElementById('profitText').innerText = data.profit;
-                        document.getElementById('countText').innerText = data.count;
-
-                        // স্লট আপডেট
-                        let html = '';
-                        data.slots.forEach((s, i) => {
-                            let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
-                            html += \`
-                            <div class="p-4 bg-slate-900/50 rounded-3xl border border-zinc-800 transition-all">
-                                <div class="flex justify-between items-center mb-1">
-                                    <span class="text-[10px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-600'}">\${s.active ? s.sym : 'SLOT '+(i+1)+' SCANNING...'}</span>
-                                    \${s.active ? \`<span class="text-[10px] font-bold \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
-                                </div>
-                                \${s.active ? \`
-                                <div class="w-full bg-black h-1 rounded-full overflow-hidden mb-2"><div class="h-full bg-green-500" style="width: \${meter}%"></div></div>
-                                <div class="grid grid-cols-2 text-[9px] font-mono text-slate-500">
-                                    <div>BUY: \${s.buy}</div><div class="text-right text-sky-400">LIVE: \${s.curP}</div>
-                                </div>\` : ''}
-                            </div>\`;
-                        });
-                        document.getElementById('slotContainer').innerHTML = html;
-                    } catch(e) {}
-                }
-                setInterval(updateData, 800); // ৮০০ মিলি-সেকেন্ড পর পর অটো আপডেট হবে
-            </script>
-        </body></html>`);
+                <script>
+                    async function updateData() {
+                        try {
+                            const res = await fetch('/api/data?id=${userId}');
+                            const data = await res.json();
+                            const rotation = (data.sentiment * 1.8) - 90;
+                            document.getElementById('needle').style.transform = 'translateX(-50%) rotate('+rotation+'deg)';
+                            document.getElementById('profitText').innerText = data.profit;
+                            document.getElementById('countText').innerText = data.count;
+                            let html = '';
+                            data.slots.forEach((s, i) => {
+                                let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
+                                html += \`
+                                <div class="p-4 bg-slate-900/50 rounded-3xl border border-zinc-800">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-[10px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-600'}">\${s.active ? s.sym : 'SLOT '+(i+1)+' SCANNING...'}</span>
+                                        \${s.active ? \`<span class="text-[10px] font-bold \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
+                                    </div>
+                                    \${s.active ? \`
+                                    <div class="w-full bg-black h-1 rounded-full overflow-hidden mb-2"><div class="h-full bg-green-500" style="width: \${meter}%"></div></div>
+                                    <div class="grid grid-cols-2 text-[9px] font-mono text-slate-500">
+                                        <div>BUY: \${s.buy}</div><div class="text-right text-sky-400">LIVE: \${s.curP}</div>
+                                    </div>\` : ''}
+                                </div>\`;
+                            });
+                            document.getElementById('slotContainer').innerHTML = html;
+                        } catch(e) {}
+                    }
+                    setInterval(updateData, 800);
+                </script>
+            </body></html>`);
+        });
     }
 });
 
