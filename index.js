@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ সিস্টেম কনফিগ (Central Setup)
+// 🛡️ সিস্টেম কনফিগ
 // ==========================================
 const MASTER_TG_TOKEN = "8281887575:AAGRTPvSdT4ho8C2nwsxCHyUMkRq2q6qWDc"; 
 const DB_FILE = 'nebula_master_final.json';
@@ -20,7 +20,7 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// ৩০টি শক্তিশালী এবং হাই মুভমেন্ট কয়েন
+// ৩০টি শক্তিশালী কয়েন
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -45,6 +45,12 @@ let userSlots = {};
 
 function sign(q, secret) { return crypto.createHmac('sha256', secret).update(q).digest('hex'); }
 
+async function sendTG(msg, chatId) {
+    try {
+        await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
+    } catch (e) { console.log("Telegram Error: ", e.response?.data || e.message); }
+}
+
 async function setLeverage(symbol, leverage, config) {
     if (config.mode === 'demo') return true;
     const ts = Date.now();
@@ -56,25 +62,6 @@ async function setLeverage(symbol, leverage, config) {
         });
         return true;
     } catch (e) { return false; }
-}
-
-async function sendTG(msg, chatId) {
-    try {
-        await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
-    } catch (e) { }
-}
-
-async function getBinanceBalance(config) {
-    if (config.mode === 'demo' || !config.api) return "1000.00 (DEMO)";
-    const ts = Date.now();
-    const query = `timestamp=${ts}`;
-    const signature = sign(query, config.sec);
-    try {
-        const res = await axios.get(`https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': config.api }, timeout: 5000
-        });
-        return res.data ? parseFloat(res.data.totalWalletBalance).toFixed(2) : "0.00";
-    } catch (e) { return "Connect API"; }
 }
 
 async function placeOrder(symbol, side, price, qty, config, type = "LIMIT") {
@@ -104,6 +91,8 @@ async function startGlobalEngine() {
         s.lp = s.p; s.p = parseFloat(msg.c);
         s.history.push(s.p); if(s.history.length > 50) s.history.shift();
         const avgP = s.history.reduce((a,b)=>a+b, 0) / s.history.length;
+        
+        // দ্রুত ট্রেড এন্ট্রির জন্য ট্রেন্ড লজিক ফাস্ট করা হয়েছে
         s.trend = s.p > s.lp ? Math.min(10, (s.trend || 0) + 1) : 0;
 
         let allUsers = getAllUsers();
@@ -115,47 +104,51 @@ async function startGlobalEngine() {
                 if (!sl.active || sl.sym !== msg.s) return;
                 sl.curP = s.p;
 
-                // বাই কমপ্লিট হওয়া চেক
+                // বাই সম্পন্ন হওয়া চেক
                 if (sl.status === 'WAITING' && s.p <= sl.buy) {
                     sl.status = 'BOUGHT';
                     const cI = COINS.find(c=>c.s===sl.sym);
                     await placeOrder(sl.sym, "SELL", sl.sell.toFixed(cI.d), sl.qty, config, "LIMIT");
-                    sendTG(`📥 *Buy Completed:* ${sl.sym}\nPrice: ${s.p}\nTarget: ${sl.sell}`, config.cid);
+                    sendTG(`🚀 *Trade Active:* #${sl.sym}\n💰 Entry: ${sl.buy}\n🎯 Target: ${sl.sell}\n🛡️ SL: ${sl.slP}`, config.cid);
                 }
 
                 if (sl.status === 'BOUGHT') {
                     sl.pnl = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
 
-                    // ১. লাভ (Take Profit)
+                    // লাভ হলে ক্লোজ
                     if (s.p >= sl.sell) {
                         const gain = (sl.qty * sl.sell) - (sl.qty * sl.buy);
                         sl.active = false; config.profit += gain; config.count += 1;
                         saveUser(userId, config);
-                        sendTG(`🎉 *Profit Realized:* ${sl.sym}\nGain: ৳${(gain*124).toFixed(0)}`, config.cid);
+                        sendTG(`✅ *Take Profit Hit:* #${sl.sym}\nProfit: +৳${(gain*124).toFixed(0)}\nTotal: ৳${(config.profit*124).toFixed(0)}`, config.cid);
                         sl.status = 'IDLE';
                     }
 
-                    // ২. স্টপ লস (Stop Loss)
+                    // লস (Stop Loss) হলে ক্লোজ
                     if (s.p <= sl.slP) {
                         const loss = (sl.qty * sl.buy) - (sl.qty * s.p);
-                        sl.active = false; config.profit -= loss; // লাভ থেকে বিয়োগ
+                        sl.active = false; config.profit -= loss;
                         saveUser(userId, config);
-                        sendTG(`❌ *Stop Loss Hit:* ${sl.sym}\nLoss: ৳${(loss*124).toFixed(0)}`, config.cid);
+                        sendTG(`❌ *Stop Loss Hit:* #${sl.sym}\nLoss: -৳${(loss*124).toFixed(0)}`, config.cid);
                         sl.status = 'IDLE';
                         if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", 0, sl.qty, config, "MARKET");
                     }
                 }
             });
 
-            // নতুন ট্রেড এন্ট্রি লজিক
+            // নতুন এন্ট্রি (আরও দ্রুত: ট্রেন্ড >= ২ হলেই এন্ট্রি খুঁজবে)
             const slotIdx = userSlots[userId].findIndex(sl => !sl.active);
-            if (!config.isPaused && slotIdx !== -1 && s.trend >= 3 && s.p < avgP) {
+            if (!config.isPaused && slotIdx !== -1 && s.trend >= 2 && s.p < avgP) {
                 const sameCoin = userSlots[userId].filter(sl => sl.active && sl.sym === msg.s);
                 if (sameCoin.length === 0) {
                     const coin = COINS.find(c => c.s === msg.s);
-                    const buyPrice = s.p * 0.9995; 
-                    const sellPrice = buyPrice * 1.0045; // ০.৪৫% প্রফিট টার্গেট
-                    const stopPrice = buyPrice * 0.9850; // ১.৫% স্টপ লস
+                    const buyPrice = s.p * 0.9998; 
+                    
+                    // মার্কেট ট্রেন্ড অনুযায়ী ডাইনামিক প্রফিট
+                    let tpPercent = s.trend > 5 ? 1.0065 : 1.0035; // ট্রেন্ড স্ট্রং হলে ০.৬৫%, নাহলে ০.৩৫% লাভ
+                    const sellPrice = buyPrice * tpPercent;
+                    const stopPrice = buyPrice * 0.9880; // ১.২% স্টপ লস (আরও টাইট)
+                    
                     const qty = ((config.cap / 5 * config.lev) / buyPrice).toFixed(coin.qd);
                     
                     await setLeverage(msg.s, config.lev, config);
@@ -167,9 +160,10 @@ async function startGlobalEngine() {
             }
         }
     });
+    ws.on('close', () => setTimeout(startGlobalEngine, 3000));
 }
 
-// 🌐 ড্যাশবোর্ড সার্ভার
+// 🌐 ড্যাশবোর্ড ও সার্ভার
 const server = http.createServer(async (req, res) => {
     let db = getAllUsers();
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -199,49 +193,41 @@ const server = http.createServer(async (req, res) => {
     if (!userId || !db[userId]) {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
         <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen text-center"><div class="max-w-md mx-auto w-full space-y-6">
-            <h1 class="text-4xl font-black text-sky-400 uppercase tracking-tighter">Quantum Setup</h1>
+            <h1 class="text-4xl font-black text-sky-400 uppercase tracking-tighter italic">Quantum AI</h1>
             <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left">
-                <input name="id" placeholder="User Name (ex: naim11)" class="w-full bg-black p-4 rounded-2xl border border-slate-800" required>
-                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
-                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800">
-                <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800">
-                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800" required>
+                <input name="id" placeholder="User Name (ex: naim11)" class="w-full bg-black p-4 rounded-2xl border border-slate-800 focus:border-sky-500 outline-none" required>
+                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800 focus:border-sky-500 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
+                <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                <input name="sec" placeholder="Binance Secret Key" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none" required>
                 <div class="grid grid-cols-2 gap-3">
-                    <input name="cap" type="number" placeholder="Capital ($)" class="bg-black p-4 rounded-2xl border border-slate-800">
-                    <input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-2xl border border-slate-800">
+                    <input name="cap" type="number" placeholder="Capital ($)" class="bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                    <input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-2xl border border-slate-800 outline-none">
                 </div>
-                <button type="submit" class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase">Start System</button>
+                <button type="submit" class="w-full bg-sky-600 p-5 rounded-[2rem] font-black uppercase shadow-lg shadow-sky-900/20 active:scale-95 transition">Start Engine</button>
             </form></div></body></html>`);
     } else {
-        let user = db[userId];
-        getBinanceBalance(user).then(balance => {
-            res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
             <style>
                 .gauge-container { position: relative; width: 180px; height: 90px; margin: 0 auto; overflow: hidden; }
                 .gauge-bg { width: 180px; height: 180px; border-radius: 50%; background: conic-gradient(#ef4444 0% 30%, #facc15 30% 70%, #22c55e 70% 100%); mask: radial-gradient(circle, transparent 65%, black 66%); -webkit-mask: radial-gradient(circle, transparent 65%, black 66%); }
                 #needle { position: absolute; bottom: 0; left: 50%; width: 3px; height: 70px; background: white; transform-origin: bottom center; transform: translateX(-50%) rotate(-90deg); transition: transform 0.5s ease-out; }
             </style></head>
-            <body class="bg-[#020617] text-white p-4">
+            <body class="bg-[#020617] text-white p-4 font-sans">
                 <div class="max-w-xl mx-auto space-y-4">
-                    <!-- সেন্টিমেন্ট মিটার -->
                     <div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 text-center">
                         <div class="gauge-container"><div class="gauge-bg"></div><div id="needle"></div></div>
-                        <h3 id="statusText" class="text-lg font-black mt-2 uppercase text-yellow-400">Neutral Market</h3>
-                        <p id="instruction" class="text-[10px] text-slate-400 leading-tight">মার্কেট স্ক্যান করা হচ্ছে...</p>
-                    </div>
-
-                    <div class="p-5 bg-slate-900 rounded-[2.5rem] border border-sky-500/30 flex justify-between items-center">
-                        <div><h2 class="text-xl font-black text-sky-400 uppercase">${userId}</h2><p class="text-[9px] text-slate-500">${user.lev}x • $${user.cap}</p></div>
-                        <div class="text-right text-green-400 font-black text-lg">$${balance}</div>
+                        <h3 id="statusText" class="text-lg font-black mt-2 uppercase text-yellow-400">Neutral</h3>
+                        <p class="text-[9px] text-slate-500 uppercase font-bold tracking-widest">Market Movement</p>
                     </div>
 
                     <div class="grid grid-cols-2 gap-4">
                         <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
-                            <p class="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Net Profit (BDT)</p>
+                            <p class="text-[9px] text-slate-500 uppercase font-bold">Net Profit (BDT)</p>
                             <p class="text-2xl font-black text-green-400">৳<span id="profitText">0</span></p>
                         </div>
                         <div class="p-4 bg-slate-900 rounded-3xl text-center border border-slate-800">
-                            <p class="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Trades</p>
+                            <p class="text-[9px] text-slate-500 uppercase font-bold">Total Trades</p>
                             <p class="text-2xl font-black text-sky-400" id="countText">0</p>
                         </div>
                     </div>
@@ -249,50 +235,43 @@ const server = http.createServer(async (req, res) => {
                     <div id="slotContainer" class="space-y-3"></div>
 
                     <div class="flex gap-3 pt-4">
-                        <a href="/reset?id=${userId}" onclick="return confirm('Reset All Data?')" class="flex-1 bg-red-900/20 border border-red-500/30 text-red-500 py-4 rounded-[2rem] text-center text-[10px] font-black uppercase">Reset</a>
-                        <button onclick="location.reload()" class="flex-1 bg-sky-600 py-4 rounded-[2rem] text-[10px] font-black uppercase">Refresh</button>
+                        <a href="/reset?id=${userId}" class="flex-1 bg-red-900/20 border border-red-500/30 text-red-500 py-4 rounded-[2rem] text-center text-[10px] font-black uppercase">Reset</a>
+                        <button onclick="location.reload()" class="flex-1 bg-sky-600 py-4 rounded-[2rem] text-[10px] font-black uppercase shadow-lg shadow-sky-600/10">Refresh</button>
                     </div>
                 </div>
-
                 <script>
                     async function updateData() {
                         try {
                             const res = await fetch('/api/data?id=${userId}');
                             const data = await res.json();
-                            
-                            // মিটার আপডেট
                             const rotation = (data.sentiment * 1.8) - 90;
                             document.getElementById('needle').style.transform = 'translateX(-50%) rotate('+rotation+'deg)';
-                            
                             document.getElementById('profitText').innerText = data.profit;
                             document.getElementById('countText').innerText = data.count;
-
+                            
                             let html = '';
                             data.slots.forEach((s, i) => {
                                 let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
                                 html += \`
                                 <div class="p-4 bg-slate-900/50 rounded-3xl border border-zinc-800">
                                     <div class="flex justify-between items-center mb-2">
-                                        <span class="text-[10px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-600'} uppercase">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning'}</span>
+                                        <span class="text-[10px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-600'} uppercase">\${s.active ? s.sym : 'Slot '+(i+1)+' Waiting'}</span>
                                         \${s.active ? \`<span class="text-[10px] font-bold \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
                                     </div>
                                     \${s.active ? \`
                                     <div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-3"><div class="h-full bg-gradient-to-r from-red-500 via-orange-500 to-green-500" style="width: \${meter}%"></div></div>
-                                    <div class="grid grid-cols-2 gap-y-1 text-[9px] font-mono text-slate-500">
-                                        <div>ENTRY: <span class="text-white">\${s.buy}</span></div>
-                                        <div class="text-right">LIVE: <span class="text-sky-400">\${s.curP}</span></div>
-                                        <div>STOP: <span class="text-red-500">\${s.slP}</span></div>
-                                        <div class="text-right">TARGET: <span class="text-green-500">\${s.sell}</span></div>
+                                    <div class="grid grid-cols-2 gap-y-1 text-[9px] font-mono text-slate-500 uppercase">
+                                        <div>Buy: <span class="text-white">\${s.buy}</span></div><div class="text-right">Live: <span class="text-sky-400">\${s.curP}</span></div>
+                                        <div>Stop: <span class="text-red-500">\${s.slP}</span></div><div class="text-right">Target: <span class="text-green-500">\${s.sell}</span></div>
                                     </div>\` : ''}
                                 </div>\`;
                             });
                             document.getElementById('slotContainer').innerHTML = html;
                         } catch(e) {}
                     }
-                    setInterval(updateData, 1000); // প্রতি ১ সেকেন্ডে আপডেট
+                    setInterval(updateData, 1000);
                 </script>
             </body></html>`);
-        });
     }
 });
 
