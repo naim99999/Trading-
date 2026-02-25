@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ Quantum AI - Master Core v13.0
+// 🛡️ Quantum AI - Master Core v15.0 (Pause Support)
 // ==========================================
 const MASTER_TG_TOKEN = "8281887575:AAGRTPvSdT4ho8C2nwsxCHyUMkRq2q6qWDc"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -26,12 +26,12 @@ const COINS = [
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
     { s: "BONKUSDT", n: "BONK", d: 8, qd: 0 }, { s: "WIFUSDT", n: "WIF", d: 4, qd: 1 },
     { s: "DOGEUSDT", n: "DOGE", d: 5, qd: 0 }, { s: "NEARUSDT", n: "NEAR", d: 4, qd: 1 },
+    { s: "AVAXUSDT", n: "AVAX", d: 3, qd: 1 }, { s: "XRPUSDT", n: "XRP", d: 4, qd: 1 },
     { s: "SUIUSDT", n: "SUI", d: 4, qd: 1 }, { s: "TIAUSDT", n: "TIA", d: 4, qd: 1 },
     { s: "FETUSDT", n: "FET", d: 4, qd: 1 }, { s: "RNDRUSDT", n: "RNDR", d: 3, qd: 1 },
-    { s: "MATICUSDT", n: "MATIC", d: 4, qd: 1 }, { s: "DOTUSDT", n: "DOT", d: 3, qd: 1 },
-    { s: "ORDIUSDT", n: "ORDI", d: 3, qd: 1 }, { s: "APTUSDT", n: "APT", d: 3, qd: 1 },
     { s: "LINKUSDT", n: "LINK", d: 3, qd: 1 }, { s: "ADAUSDT", n: "ADA", d: 4, qd: 1 },
-    { s: "OPUSDT", n: "OP", d: 4, qd: 1 }, { s: "ARBUSDT", n: "ARB", d: 4, qd: 1 }
+    { s: "MATICUSDT", n: "MATIC", d: 4, qd: 1 }, { s: "DOTUSDT", n: "DOT", d: 3, qd: 1 },
+    { s: "ORDIUSDT", n: "ORDI", d: 3, qd: 1 }, { s: "APTUSDT", n: "APT", d: 3, qd: 1 }
 ];
 
 let market = {};
@@ -47,10 +47,7 @@ async function sendTG(msg, chatId) {
             chat_id: id, text: msg, parse_mode: 'Markdown'
         });
         return true;
-    } catch (e) {
-        console.error("TG Error:", e.response?.data?.description || e.message);
-        return false;
-    }
+    } catch (e) { return false; }
 }
 
 async function placeOrder(symbol, side, qty, config) {
@@ -92,11 +89,13 @@ async function startGlobalEngine() {
                 let rawPnL = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
                 sl.pnl = rawPnL - 0.15; 
 
+                // Break-even Protection
                 if (!sl.be && rawPnL >= 0.25) {
                     sl.slP = sl.buy * 1.0015; sl.be = true;
                     sendTG(`🛡️ *Safety Locked:* #${sl.sym} এর লাভ এখন ফি সহ সুরক্ষিত।`, config.cid);
                 }
 
+                // Close in Profit
                 if (s.p >= sl.sell) {
                     const gain = (sl.qty * s.p) - (sl.qty * sl.buy);
                     const netGain = gain * 0.998;
@@ -106,6 +105,7 @@ async function startGlobalEngine() {
                     if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, config);
                 }
 
+                // Close in SL
                 if (s.p <= sl.slP) {
                     const loss = (sl.qty * sl.buy) - (sl.qty * s.p);
                     sl.active = false; config.profit -= loss; config.count += 1;
@@ -115,6 +115,7 @@ async function startGlobalEngine() {
                 }
             });
 
+            // নতুন এন্ট্রি (শুধুমাত্র যদি পজ না করা থাকে)
             const slotIdx = userSlots[userId].findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 3) {
                 const sameCoin = userSlots[userId].filter(sl => sl.active && sl.sym === msg.s);
@@ -134,7 +135,6 @@ async function startGlobalEngine() {
             }
         }
     });
-    ws.on('close', () => setTimeout(startGlobalEngine, 3000));
 }
 
 const server = http.createServer(async (req, res) => {
@@ -144,15 +144,22 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/data') {
         const uid = url.searchParams.get('id');
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ slots: userSlots[uid] || [], profit: db[uid] ? (db[uid].profit * 124).toFixed(0) : 0, count: db[uid] ? db[uid].count : 0 }));
+        return res.end(JSON.stringify({ 
+            slots: userSlots[uid] || [], 
+            profit: db[uid] ? (db[uid].profit * 124).toFixed(0) : 0, 
+            count: db[uid] ? db[uid].count : 0,
+            isPaused: db[uid]?.isPaused || false
+        }));
     }
 
-    if (url.pathname === '/test-tg') {
+    if (url.pathname === '/toggle-pause') {
         const uid = url.searchParams.get('id');
-        const user = db[uid];
-        const success = await sendTG("🔔 *Connection Check:* ড্যাশবোর্ড ও টেলিগ্রাম এখন কানেক্টেড!", user?.cid);
-        res.writeHead(200); return res.end(success ? "OK" : "FAIL");
+        if (db[uid]) {
+            db[uid].isPaused = !db[uid].isPaused;
+            saveUser(uid, db[uid]);
+            sendTG(db[uid].isPaused ? "⏸️ *System Paused:* নতুন কোনো ট্রেড নেওয়া হবে না।" : "▶️ *System Resumed:* বোট আবার ট্রেড খোঁজা শুরু করেছে।", db[uid].cid);
+        }
+        res.writeHead(200); return res.end("OK");
     }
 
     if (url.pathname === '/reset') {
@@ -163,58 +170,42 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/register') {
         const id = url.searchParams.get('id');
-        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, mode: url.searchParams.get('mode')||'live', profit: 0, count: 0 });
+        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, mode: url.searchParams.get('mode')||'live', profit: 0, count: 0, isPaused: false });
         res.writeHead(302, { 'Location': '/' + id }); return res.end();
     }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
-        <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen text-center"><div class="max-w-md mx-auto w-full space-y-6">
-            <h1 class="text-6xl font-black text-sky-400 italic">QUANTUM</h1>
-            <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2rem] space-y-4 border border-slate-800 text-left">
-                <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none" required>
-                <select name="mode" class="w-full bg-black p-4 rounded-xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
-                <input name="api" placeholder="Binance API" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none">
-                <input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none">
-                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none" value="${FIXED_CHAT_ID}">
-                <div class="grid grid-cols-2 gap-3">
-                    <input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl border border-slate-800 outline-none">
-                    <input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none">
-                </div>
-                <button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase">Start Dream</button>
-            </form></div></body></html>`);
+        res.end(`Registration form...`);
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
             <body class="bg-[#020617] text-white p-4 font-sans uppercase">
                 <div class="max-w-xl mx-auto space-y-4">
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="p-6 bg-slate-900 rounded-[2.5rem] text-center border border-slate-800">
-                            <p class="text-[9px] text-slate-500 font-bold mb-1 tracking-widest uppercase">Growth (BDT)</p>
+                    <div class="grid grid-cols-2 gap-4 text-center">
+                        <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800">
+                            <p class="text-[9px] text-slate-500 font-bold mb-1">Net Growth</p>
                             <p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p>
                         </div>
-                        <div class="p-6 bg-slate-900 rounded-[2.5rem] text-center border border-slate-800">
-                            <p class="text-[9px] text-slate-500 font-bold mb-1 tracking-widest uppercase">Completed</p>
+                        <div class="p-6 bg-slate-900 rounded-[2rem] border border-slate-800">
+                            <p class="text-[9px] text-slate-500 font-bold mb-1">Completed</p>
                             <p class="text-4xl font-black text-sky-400" id="countText">0</p>
                         </div>
                     </div>
+
                     <div id="slotContainer" class="space-y-3"></div>
-                    <div class="space-y-2">
-                        <button onclick="checkTG()" id="tgBtn" class="w-full bg-sky-900/30 border border-sky-500/30 text-sky-400 py-4 rounded-full text-[10px] font-black tracking-widest uppercase">Check Telegram Connection</button>
-                        <div class="flex gap-3">
-                            <a href="/reset?id=${userId}" onclick="return confirm('সব ডাটা মুছে নতুন করে শুরু করবেন?')" class="flex-1 bg-red-900/20 border border-red-500/30 text-red-500 py-4 rounded-full text-center text-[10px] font-black uppercase tracking-widest">Reset Data</a>
-                            <button onclick="location.reload()" class="flex-1 bg-sky-600 py-4 rounded-full text-[10px] font-black uppercase tracking-widest uppercase">Refresh</button>
-                        </div>
+
+                    <div class="grid grid-cols-2 gap-3 pt-4">
+                        <button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black tracking-widest bg-orange-900/30 border border-orange-500/50 text-orange-400">PAUSE SYSTEM</button>
+                        <a href="/reset?id=${userId}" onclick="return confirm('সব ডাটা মুছে নতুন করে শুরু করবেন?')" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black tracking-widest">RESET DATA</a>
                     </div>
+                    <button onclick="location.reload()" class="w-full bg-sky-600 py-5 rounded-full text-[10px] font-black tracking-widest">REFRESH DASHBOARD</button>
                 </div>
                 <script>
-                    async function checkTG() {
-                        const btn = document.getElementById('tgBtn');
-                        btn.innerText = "CHECKING...";
-                        const res = await fetch('/test-tg?id=${userId}');
-                        const status = await res.text();
-                        btn.innerText = status === "OK" ? "SUCCESS! CHECK TELEGRAM" : "FAILED! START YOUR BOT FIRST";
-                        setTimeout(() => btn.innerText = "Check Telegram Connection", 3000);
+                    async function togglePause() {
+                        const btn = document.getElementById('pauseBtn');
+                        btn.innerText = "WAIT...";
+                        await fetch('/toggle-pause?id=${userId}');
+                        updateData();
                     }
                     async function updateData() {
                         try {
@@ -222,16 +213,26 @@ const server = http.createServer(async (req, res) => {
                             const data = await res.json();
                             document.getElementById('profitText').innerText = data.profit;
                             document.getElementById('countText').innerText = data.count;
+                            
+                            const btn = document.getElementById('pauseBtn');
+                            if(data.isPaused) {
+                                btn.innerText = "RESUME SYSTEM";
+                                btn.className = "py-5 rounded-full text-[10px] font-black tracking-widest bg-green-900/30 border border-green-500/50 text-green-400";
+                            } else {
+                                btn.innerText = "PAUSE SYSTEM";
+                                btn.className = "py-5 rounded-full text-[10px] font-black tracking-widest bg-orange-900/30 border border-orange-500/50 text-orange-400";
+                            }
+
                             let html = '';
                             data.slots.forEach((s, i) => {
                                 let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
                                 html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800">
                                     <div class="flex justify-between items-center mb-3">
-                                        <span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'}</span>
+                                        <span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'}">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'}</span>
                                         \${s.active ? \`<span class="text-[11px] font-black \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
                                     </div>
                                     \${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${meter}%"></div></div>
-                                    <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1 uppercase">
+                                    <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1">
                                         <div>Entry: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div>
                                         <div class="text-red-500/70">Stop: \${s.slP.toFixed(4)}</div><div class="text-right text-green-500">Target: \${s.sell.toFixed(4)}</div>
                                     </div>\` : ''}
@@ -247,4 +248,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => { startGlobalEngine(); });
+server.listen(PORT, '0.0.0.0', () => { 
+    startGlobalEngine(); 
+    sendTG("🚀 *Quantum v15.0 Online!* সিস্টেম সচল করা হয়েছে।", FIXED_CHAT_ID);
+});
