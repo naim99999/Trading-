@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ Quantum AI - Guardian v8.5 (Final)
+// 🛡️ Quantum AI - Guardian v8.5 (Full Version)
 // ==========================================
 const MASTER_TG_TOKEN = "8281887575:AAGRTPvSdT4ho8C2nwsxCHyUMkRq2q6qWDc"; 
 const DB_FILE = 'nebula_master_final.json';
@@ -20,7 +20,7 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// ৪০টি হাই-কোয়ালিটি কয়েন
+// ৪০টি হাই-কোয়ালিটি কয়েন (সাগর গড়ার উপাদান)
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -95,10 +95,10 @@ async function startGlobalEngine() {
                     let rawPnL = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
                     sl.pnl = rawPnL - 0.12; 
 
-                    // ১. ব্রেক-ইভেন সুরক্ষা
+                    // ১. ব্রেক-ইভেন সুরক্ষা (Safety Guard)
                     if (!sl.be && rawPnL >= 0.15) {
                         sl.slP = sl.buy; sl.be = true;
-                        sendTG(`🛡️ *Safety Locked:* #${sl.sym} এর স্টপ লস এন্ট্রি প্রাইসে সরানো হয়েছে।`, config.cid);
+                        sendTG(`🛡️ *Safety Locked:* #${sl.sym} এর স্টপ লস এন্ট্রি প্রাইসে সেট করা হয়েছে। এখন আর এই ট্রেডে লস হবে না।`, config.cid);
                     }
 
                     // ২. প্রফিট সেল (০.৫০% টার্গেট)
@@ -112,7 +112,7 @@ async function startGlobalEngine() {
                         if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", 0, sl.qty, config, "MARKET");
                     }
 
-                    // ৩. স্টপ লস সেল (০.৭০% এ কাটবে)
+                    // ৩. স্টপ লস সেল
                     if (s.p <= sl.slP) {
                         const loss = (sl.qty * sl.buy) - (sl.qty * s.p);
                         sl.active = false; config.profit -= loss;
@@ -131,7 +131,7 @@ async function startGlobalEngine() {
                 if (sameCoin.length === 0) {
                     const coin = COINS.find(c => c.s === msg.s);
                     const buyPrice = s.p;
-                    const sellPrice = buyPrice * 1.0050; // ০.৫০% টার্গেট
+                    const sellPrice = buyPrice * 1.0050; // ০.৫০% লাভ
                     const stopPrice = buyPrice * 0.9930; // ০.৭০% এসএল
                     const qty = ((config.cap / 5 * config.lev) / buyPrice).toFixed(coin.qd);
                     
@@ -173,7 +173,22 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
-        res.end(`Registration form code...`);
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen"><div class="max-w-md mx-auto w-full space-y-6">
+            <h1 class="text-6xl font-black text-sky-400 italic text-center tracking-tighter">QUANTUM</h1>
+            <p class="text-center text-xs text-slate-500 uppercase tracking-widest font-bold">The Journey to Millions</p>
+            <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800">
+                <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none" required>
+                <select name="mode" class="w-full bg-black p-4 rounded-2xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
+                <input name="api" placeholder="Binance API" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                <input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                <input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-2xl border border-slate-800 outline-none" required>
+                <div class="grid grid-cols-2 gap-3">
+                    <input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                    <input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-2xl border border-slate-800 outline-none">
+                </div>
+                <button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase text-xl shadow-lg shadow-sky-600/30">Start Dream</button>
+            </form></div></body></html>`);
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script>
             <style>
@@ -220,11 +235,11 @@ const server = http.createServer(async (req, res) => {
                                 let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
                                 html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800">
                                     <div class="flex justify-between items-center mb-2">
-                                        <span class="text-[10px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'}</span>
-                                        \${s.active ? \`<span class="text-[10px] font-black \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
+                                        <span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'}</span>
+                                        \${s.active ? \`<span class="text-[11px] font-black \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}
                                     </div>
-                                    \${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500" style="width: \${meter}%"></div></div>
-                                    <div class="grid grid-cols-2 text-[9px] font-mono text-slate-500 gap-y-1">
+                                    \${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-500" style="width: \${meter}%"></div></div>
+                                    <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1">
                                         <div>Entry: \${s.buy}</div><div class="text-right">Live: \${s.curP}</div>
                                         <div>Stop: <span class="text-red-500">\${s.slP}</span></div><div class="text-right text-green-500">Target: \${s.sell}</div>
                                     </div>\` : ''}
