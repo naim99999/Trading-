@@ -7,7 +7,7 @@ const fs = require('fs');
 // ==========================================
 // 🛡️ Quantum AI - Master Core v20.0 (Final)
 // ==========================================
-const MASTER_TG_TOKEN = "8281887575:AAGRTPvSdT4ho8C2nwsxCHyUMkRq2q6qWDc"; 
+const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
 const DB_FILE = 'nebula_master_final.json';
 
