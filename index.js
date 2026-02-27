@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==========================================
-// 🛡️ Quantum AI - Master Speed DCA v33.0 (FULL)
+// 🛡️ Quantum AI - Master Core v34.0 (Final)
 // ==========================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -21,7 +21,7 @@ function saveUser(userId, data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// ৪০টি শক্তিশালী কয়েন (সাগর গড়ার কাঁচামাল)
+// ৪৩টি শক্তিশালী কয়েন (সাগর গড়ার কাঁচামাল)
 const COINS = [
     { s: "BTCUSDT", n: "BTC", d: 2, qd: 3 }, { s: "ETHUSDT", n: "ETH", d: 2, qd: 3 }, 
     { s: "SOLUSDT", n: "SOL", d: 3, qd: 2 }, { s: "1000PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
@@ -42,7 +42,9 @@ const COINS = [
     { s: "GALAUSDT", n: "GALA", d: 5, qd: 0 }, { s: "ICPUSDT", n: "ICP", d: 3, qd: 1 },
     { s: "RUNEUSDT", n: "RUNE", d: 3, qd: 1 }, { s: "OMUSDT", n: "OM", d: 4, qd: 1 },
     { s: "JUPUSDT", n: "JUP", d: 4, qd: 1 }, { s: "PYTHUSDT", n: "PYTH", d: 4, qd: 1 },
-    { s: "ONDOUSDT", n: "ONDO", d: 4, qd: 1 }, { s: "WLDUSDT", n: "WLD", d: 4, qd: 1 }
+    { s: "ONDOUSDT", n: "ONDO", d: 4, qd: 1 }, { s: "SATSUSDT", n: "SATS", d: 7, qd: 0 },
+    { s: "WLDUSDT", n: "WLD", d: 4, qd: 1 }, { s: "PEPEUSDT", n: "PEPE", d: 7, qd: 0 },
+    { s: "FLOKIUSDT", n: "FLOKI", d: 6, qd: 0 }
 ];
 
 let market = {};
@@ -51,14 +53,13 @@ let userSlots = {};
 
 function sign(q, secret) { return crypto.createHmac('sha256', secret).update(q).digest('hex'); }
 
-// ১. উন্নত টেলিগ্রাম রিপোর্টার
 async function sendTG(msg, chatId) {
     const id = chatId || FIXED_CHAT_ID;
     try { await axios.post(`https://api.telegram.org/bot${MASTER_TG_TOKEN}/sendMessage`, { chat_id: id, text: msg, parse_mode: 'Markdown' }); return true; } catch (e) { return false; }
 }
 
 async function getBinanceBalance(config) {
-    if (config.mode === 'demo' || !config.api) return "100.00 (Demo)";
+    if (config.mode === 'demo' || !config.api) return "1000.00 (DEMO)";
     const ts = Date.now();
     const query = `timestamp=${ts}`;
     const signature = sign(query, config.sec);
@@ -66,6 +67,14 @@ async function getBinanceBalance(config) {
         const res = await axios.get(`https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`, { headers: { 'X-MBX-APIKEY': config.api }, timeout: 5000 });
         return res.data ? parseFloat(res.data.totalWalletBalance).toFixed(2) : "0.00";
     } catch (e) { return "Error"; }
+}
+
+async function setLeverage(symbol, leverage, config) {
+    if (config.mode === 'demo') return true;
+    const ts = Date.now();
+    const query = `symbol=${symbol}&leverage=${leverage}&timestamp=${ts}`;
+    const signature = sign(query, config.sec);
+    try { await axios.post(`https://fapi.binance.com/fapi/v1/leverage?${query}&signature=${signature}`, null, { headers: { 'X-MBX-APIKEY': config.api } }); return true; } catch (e) { return false; }
 }
 
 async function placeOrder(symbol, side, qty, config) {
@@ -102,15 +111,16 @@ async function startGlobalEngine() {
                 sl.curP = s.p;
 
                 let rawPnL = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
-                sl.pnl = rawPnL - 0.15; 
+                sl.pnl = rawPnL - 0.14; 
 
-                // ফী-সহ ব্রেক ইভেন শিল্ড
-                if (!sl.be && rawPnL >= 0.25) {
+                // ১. উন্নত শিল্ড (০.৩০% লাভে গেলে ৳২-৳৫ লাভ লক করা হবে)
+                if (!sl.be && rawPnL >= 0.30) {
+                    sl.slP = sl.buy * 1.0020; // কেনা দামের ০.২০% উপরে SL
                     sl.be = true;
-                    sendTG(`🛡️ *Shield Active:* #${sl.sym} এর লাভ এখন ফি সহ সুরক্ষিত।`, config.cid);
+                    sendTG(`🛡️ *Profit Shield:* #${sl.sym} এর লাভ লক করা হয়েছে।`, config.cid);
                 }
 
-                // DCA রিকভারি (দাম ১.৫% ডাউনে গেলে এভারেজ করবে)
+                // ২. DCA লজিক (দাম ১.৫% ডাউনে গড় ক্রয়মূল্য কমানো)
                 if (sl.dca < 3 && rawPnL <= -1.5) {
                     const order = await placeOrder(sl.sym, "BUY", sl.qty, config);
                     if (order) {
@@ -119,35 +129,34 @@ async function startGlobalEngine() {
                         sl.buy = sl.totalCost / sl.qty;
                         sl.dca += 1;
                         sl.sell = sl.buy * 1.0040;
-                        sendTG(`🌀 *DCA Recovery:* #${sl.sym} এভারেজ করে লিকুইডেশন প্রাইস কমানো হলো।`, config.cid);
+                        sendTG(`🌀 *DCA Executed:* #${sl.sym} গড় ক্রয়মূল্য কমিয়ে ${sl.buy.toFixed(4)} করা হলো।`, config.cid);
                     }
                 }
 
-                // ইনটেলিজেন্ট ওয়েটিং লজিক (দাম টার্গেটে গেলে ট্রেন্ড চেক)
+                // ৩. ইন্টেলিজেন্ট ওয়েটিং ও প্রফিট ক্লোজিং
                 if (s.p >= sl.sell) {
-                    if (s.trend > 7) {
-                        sl.sell = sl.sell * 1.0015; // লাভ একটু বাড়িয়ে ওয়েট করো
-                        return;
-                    }
+                    if (s.trend > 7) { sl.sell = sl.sell * 1.0015; return; } // বড় মুভমেন্টের জন্য ওয়েট
 
                     const gain = (sl.qty * s.p) - (sl.totalCost);
-                    const netGain = gain * 0.9988; // নিট প্রফিট হিসাব
+                    const netGain = gain * 0.9985;
                     sl.active = false; config.profit += netGain; config.count += 1;
                     saveUser(userId, config);
-                    
-                    sendTG(`✅ *PROFIT BOOKED:* #${sl.sym}\nলাভ: ৳${(netGain*124).toFixed(0)}\nমোট সাগর জমা: ৳${(config.profit*124).toFixed(0)}`, config.cid);
+                    sendTG(`✅ *PROFIT LOCKED:* #${sl.sym}\nলাভ: ৳${(netGain*124).toFixed(0)}\nমোট সাগর: ৳${(config.profit*124).toFixed(0)}`, config.cid);
                     if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, config);
                 }
                 
-                // শিল্ড এক্টিভ হওয়ার পর জিরো লসে ক্লোজ
-                if (sl.be && s.p <= sl.buy * 1.0010) {
-                    sl.active = false;
-                    sendTG(`🛡️ *Shield Triggered:* #${sl.sym} জিরো লসে বন্ধ হলো।`, config.cid);
+                // ৪. শিল্ড ক্লোজ (যদি দাম শিল্ড প্রাইসে নামে)
+                if (sl.be && s.p <= sl.slP) {
+                    const gain = (sl.qty * s.p) - (sl.totalCost);
+                    const netGain = gain * 0.9985;
+                    sl.active = false; config.profit += netGain; config.count += 1;
+                    saveUser(userId, config);
+                    sendTG(`🛡️ *Shield Closed:* #${sl.sym} সামান্য লাভে ক্লোজ হলো।\nলাভ: ৳${(netGain*124).toFixed(0)}`, config.cid);
                     if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, config);
                 }
             });
 
-            // সুপার ফাস্ট এন্ট্রি (Trend >= 1)
+            // ৫. সুপার ফাস্ট এন্ট্রি (Trend >= 1)
             const slotIdx = userSlots[userId].findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 1) {
                 const sameCoin = userSlots[userId].filter(sl => sl.active && sl.sym === msg.s);
@@ -155,14 +164,13 @@ async function startGlobalEngine() {
                     const coin = COINS.find(c => c.s === msg.s);
                     const buyPrice = s.p;
                     const sellPrice = buyPrice * 1.0040; 
-                    
-                    // পুঁজির ১/১২ অংশ প্রথম এন্ট্রিতে (বাকিটা DCA ব্যাকআপ)
                     const qty = ((config.cap / 12 * config.lev) / buyPrice).toFixed(coin.qd);
                     
+                    await setLeverage(msg.s, config.lev, config);
                     const order = await placeOrder(msg.s, "BUY", qty, config);
                     if (order) {
                         userSlots[userId][slotIdx] = { id: slotIdx, active: true, sym: msg.s, buy: buyPrice, sell: sellPrice, qty: qty, pnl: 0, curP: s.p, dca: 0, totalCost: (qty * buyPrice), be: false };
-                        sendTG(`🚀 *FAST ENTRY:* #${msg.s}`, config.cid);
+                        sendTG(`🚀 *NEW ENTRY:* #${msg.s} শুরু হলো।`, config.cid);
                     }
                 }
             }
@@ -181,12 +189,6 @@ const server = http.createServer(async (req, res) => {
         const user = db[uid];
         const balance = await getBinanceBalance(user || {});
         return res.end(JSON.stringify({ slots: userSlots[uid] || [], profit: user ? (user.profit * 124).toFixed(0) : 0, count: user ? user.count : 0, isPaused: user?.isPaused || false, balance: balance }));
-    }
-
-    if (url.pathname === '/test-tg') {
-        const uid = url.searchParams.get('id');
-        const success = await sendTG("🔔 *Test:* টেলিগ্রাম এখন কানেক্টেড!", db[uid]?.cid);
-        res.writeHead(200); return res.end(success ? "OK" : "FAIL");
     }
 
     if (url.pathname === '/toggle-pause') {
@@ -210,9 +212,9 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
-        <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen text-center uppercase font-black italic tracking-tighter"><div class="max-w-md mx-auto w-full space-y-6">
-            <h1 class="text-7xl text-sky-400">QUANTUM</h1>
-            <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left tracking-normal not-italic font-sans">
+        <body class="bg-[#020617] text-white p-6 flex items-center min-h-screen text-center"><div class="max-w-md mx-auto w-full space-y-6">
+            <h1 class="text-7xl font-black text-sky-400 italic italic tracking-tighter uppercase">Quantum</h1>
+            <form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left">
                 <input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none" required>
                 <select name="mode" class="w-full bg-black p-4 rounded-xl border border-slate-800"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select>
                 <input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl border border-slate-800 outline-none">
@@ -229,7 +231,7 @@ const server = http.createServer(async (req, res) => {
             <body class="bg-[#020617] text-white p-4 font-sans uppercase">
                 <div class="max-w-xl mx-auto space-y-4">
                     <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl">
-                        <p class="text-[10px] text-sky-400 font-bold mb-1 tracking-widest uppercase">Available Binance Balance</p>
+                        <p class="text-[10px] text-sky-400 font-bold mb-1 tracking-widest uppercase">Binance Futures Balance</p>
                         <p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p>
                     </div>
                     <div class="grid grid-cols-2 gap-4">
@@ -237,17 +239,16 @@ const server = http.createServer(async (req, res) => {
                         <div class="p-5 bg-slate-900 rounded-[2.5rem] text-center border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div>
                     </div>
                     <div id="slotContainer" class="space-y-3"></div>
-                    <div class="space-y-3 pt-4">
-                        <button onclick="checkTG()" id="tgBtn" class="w-full bg-sky-900/30 border border-sky-500/30 text-sky-400 py-4 rounded-full text-[10px] font-black tracking-widest uppercase">Check Telegram Connection</button>
-                        <div class="grid grid-cols-2 gap-3">
-                            <button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400 uppercase tracking-widest">Pause</button>
-                            <a href="/reset?id=${userId}" onclick="return confirm('রিসেট করবেন?')" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black tracking-widest">Reset</a>
-                        </div>
-                        <a href="/" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black tracking-widest italic">Logout</a>
+                    <div class="grid grid-cols-2 gap-3 pt-4 uppercase">
+                        <button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button>
+                        <a href="/reset?id=${userId}" onclick="return confirm('রিসেট করবেন?')" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black">Reset</a>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 text-center">
+                        <a href="/" class="bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-[10px] font-black italic">Logout</a>
+                        <button onclick="location.reload()" class="bg-sky-600 py-5 rounded-full text-[10px] font-black">Refresh</button>
                     </div>
                 </div>
                 <script>
-                    async function checkTG() { const btn = document.getElementById('tgBtn'); btn.innerText = "TESTING..."; const res = await fetch('/test-tg?id=${userId}'); const status = await res.text(); btn.innerText = status === "OK" ? "SUCCESS! CHECK MOBILE" : "FAILED! START BOT"; setTimeout(() => btn.innerText = "Check Telegram Connection", 3000); }
                     async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }
                     async function updateData() {
                         try {
@@ -257,16 +258,15 @@ const server = http.createServer(async (req, res) => {
                             document.getElementById('profitText').innerText = data.profit;
                             document.getElementById('countText').innerText = data.count;
                             const pBtn = document.getElementById('pauseBtn');
-                            if(data.isPaused) { pBtn.innerText = "RESUME"; pBtn.className = "flex-1 bg-green-900/20 border border-green-500/30 text-green-400 py-5 rounded-full text-[10px] font-black tracking-widest"; }
-                            else { pBtn.innerText = "PAUSE"; pBtn.className = "flex-1 bg-orange-900/20 border border-orange-500/30 text-orange-500 py-5 rounded-full text-[10px] font-black tracking-widest"; }
-                            
+                            if(data.isPaused) { pBtn.innerText = "RESUME"; pBtn.className = "flex-1 bg-green-900/20 border border-green-500/30 text-green-400 py-5 rounded-full text-[10px] font-black"; }
+                            else { pBtn.innerText = "PAUSE"; pBtn.className = "flex-1 bg-orange-900/20 border border-orange-500/30 text-orange-500 py-5 rounded-full text-[10px] font-black"; }
                             let html = '';
                             data.slots.forEach((s, i) => {
                                 let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
-                                html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 transition-all mb-3 shadow-lg uppercase">
+                                html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 transition-all duration-300 mb-3 shadow-lg uppercase">
                                     <div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}</div>
                                     \${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${meter}%"></div></div>
-                                    <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1 uppercase"><div>Entry: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-orange-400">Recovery: No Stop Loss</div><div class="text-right text-green-500">Target: \${s.sell.toFixed(4)}</div></div>\` : ''}
+                                    <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Entry: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-orange-400">Recovery Mode</div><div class="text-right text-green-500">Target: \${s.sell.toFixed(4)}</div></div>\` : ''}
                                 </div>\`;
                             });
                             document.getElementById('slotContainer').innerHTML = html;
@@ -281,5 +281,5 @@ const server = http.createServer(async (req, res) => {
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => { 
     startGlobalEngine(); 
-    sendTG("🚀 *Nebula Intelligence Core v33.0 Online!* যাত্রা সফল হোক।", FIXED_CHAT_ID);
+    sendTG("🚀 *Nebula Final Core v34.0 Online!* যাত্রা সফল হোক।", FIXED_CHAT_ID);
 });
