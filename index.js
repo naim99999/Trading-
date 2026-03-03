@@ -44,13 +44,13 @@ let market = {};
 COINS.forEach(c => market[c.s] = { p: 0, lp: 0, trend: 0, history: [], low: 0 });
 
 function calculateRSI(prices, period = 14) {
-    if (prices.length <= period) return 50;
+    if (prices.length <= period) return 45; // Default safe value
     let gains = 0, losses = 0;
     for (let i = 1; i <= period; i++) {
         let diff = prices[prices.length - i] - prices[prices.length - i - 1];
         diff >= 0 ? gains += diff : losses -= diff;
     }
-    let rs = (gains / period) / (losses / period);
+    let rs = (gains / period) / (losses / period || 1);
     return 100 - (100 / (1 + rs));
 }
 
@@ -95,7 +95,7 @@ async function startGlobalEngine() {
         s.lp = s.p; s.p = parseFloat(msg.c);
         s.history.push(s.p); if(s.history.length > 50) s.history.shift();
         s.trend = s.p > s.lp ? Math.min(10, (s.trend || 0) + 1) : 0;
-        if (s.p < s.low || s.low === 0) s.low = s.p; // লোকাল লো ট্র্যাকিং
+        if (s.p < s.low || s.low === 0) s.low = s.p;
 
         let allUsers = getAllUsers();
         for (let userId in allUsers) {
@@ -158,15 +158,14 @@ async function startGlobalEngine() {
             const slotIdx = config.userSlots.findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1) {
                 const rsi = calculateRSI(s.history);
-                const sma = s.history.reduce((a,b)=>a+b, 0)/s.history.length;
                 const localHigh = Math.max(...s.history);
                 
-                // এন্ট্রি লজিক: ০.৪৫% ডিপ + RSI ৩৫ এর নিচে + লোকাল লো থেকে ০.০৫% রিভার্সাল
-                const isDeepDip = s.p < (localHigh * 0.9955);
-                const isOversold = rsi < 35;
-                const hasReversed = s.p > (s.low * 1.0005); 
+                // এন্ট্রি লজিক ব্যালেন্স (Speed + Safety)
+                const isDip = s.p < (localHigh * 0.9970); // ০.৩০% ডিপ (দ্রুত এন্ট্রির জন্য)
+                const isOversold = rsi < 45; // ৪২ RSI (সহজ এন্ট্রি)
+                const hasReversed = s.p > (s.low * 1.0002); // সামান্য রিভার্সাল কনফার্মেশন
 
-                if (isDeepDip && isOversold && hasReversed) {
+                if (isDip && isOversold && hasReversed) {
                     const sameCoin = config.userSlots.filter(sl => sl.active && sl.sym === msg.s);
                     if (sameCoin.length === 0) {
                         const coin = COINS.find(c => c.s === msg.s);
@@ -180,7 +179,7 @@ async function startGlobalEngine() {
                         if (order) {
                             if(config.mode === 'demo') config.cap = parseFloat(config.cap) - marginEntry; 
                             config.userSlots[slotIdx] = { id: slotIdx, active: true, status: 'TRADING', sym: msg.s, buy: s.p, sell: s.p * 1.0040, slP: 0, qty: qty, pnl: 0, curP: s.p, dca: 0, totalCost: (parseFloat(qty) * s.p), be: false };
-                            s.low = 0; // রিসেট লো
+                            s.low = 0; 
                             saveUser(userId, { cap: config.cap, userSlots: config.userSlots });
                             const entryMsg = `🚀 <b>SAFE ENTRY: #${msg.s}</b>\n----------------------------------\n💰 মার্জিন এন্ট্রি: $${marginEntry.toFixed(4)}\n⛽ আনুমানিক ফী: $${entryFeeUSD.toFixed(4)}\n📉 মোট খরচ: $${(marginEntry + entryFeeUSD).toFixed(4)}\n----------------------------------`;
                             sendTG(entryMsg, config.cid);
@@ -208,7 +207,9 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/register') { 
         const id = url.searchParams.get('id'); 
-        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', profit: 0, count: 0, isPaused: false, userSlots: [] }); 
+        const cid = url.searchParams.get('cid');
+        saveUser(id, { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', profit: 0, count: 0, isPaused: false, userSlots: [] }); 
+        sendTG("🚀 <b>System Initialized!</b>", cid); 
         res.writeHead(302, { 'Location': '/' + id }); return res.end(); 
     }
 
