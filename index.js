@@ -15,7 +15,11 @@ function getAllUsers() {
     try { if (!fs.existsSync(DB_FILE)) return {}; return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch(e) { return {}; }
 }
 function saveUser(userId, data) {
-    try { let users = getAllUsers(); users[userId] = { ...users[userId], ...data }; fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2)); } catch(e) {}
+    try { 
+        let users = getAllUsers(); 
+        users[userId] = { ...users[userId], ...data }; 
+        fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2)); 
+    } catch(e) {}
 }
 
 const COINS = [
@@ -38,7 +42,6 @@ const COINS = [
 
 let market = {};
 COINS.forEach(c => market[c.s] = { p: 0, lp: 0, trend: 0, history: [] });
-let userSlots = {}; 
 
 function sign(q, secret) { return crypto.createHmac('sha256', secret).update(q).digest('hex'); }
 
@@ -86,18 +89,21 @@ async function startGlobalEngine() {
         for (let userId in allUsers) {
             let config = allUsers[userId];
             let maxSlots = parseInt(config.slots) || 5;
-            let feeRate = config.fMode === 'bnb' ? 0.00045 : 0.0005; // BNB হলে ০.০৪৫%, না হলে ০.০৫%
+            let feeRate = config.fMode === 'bnb' ? 0.00045 : 0.0005;
 
-            if (!userSlots[userId]) userSlots[userId] = Array(maxSlots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, sell: 0, slP: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, be: false, status: 'IDLE' }));
+            // স্লট গায়েব হওয়া বন্ধ করার ফিক্স
+            if (!config.userSlots || config.userSlots.length !== maxSlots) {
+                config.userSlots = Array(maxSlots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, sell: 0, slP: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, be: false, status: 'IDLE' }));
+                saveUser(userId, { userSlots: config.userSlots });
+            }
             
-            userSlots[userId].forEach(async (sl) => {
+            config.userSlots.forEach(async (sl) => {
                 if (!sl.active || sl.sym !== msg.s || sl.status !== 'TRADING') return;
                 sl.curP = s.p;
 
                 let rawPnL = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
-                sl.pnl = rawPnL - (feeRate * 200); // নিট হিসাব (বাইডেন ফী বাদ দিয়ে)
+                sl.pnl = rawPnL - (feeRate * 200);
 
-                // শিল্ড এক্টিভেশন
                 if (rawPnL >= 0.35) {
                     let newShield = sl.buy * (1 + (rawPnL - 0.12) / (100 * config.lev)); 
                     if (!sl.be || newShield > sl.slP) { sl.slP = newShield; sl.be = true; }
@@ -107,26 +113,29 @@ async function startGlobalEngine() {
                     }
                 }
 
-                // DCA লজিক
                 let dcaTrigger = sl.dca === 0 ? -1.8 : (sl.dca === 1 ? -4.5 : -9.0);
                 if (rawPnL <= dcaTrigger && sl.dca < 5) {
                     const order = await placeOrder(sl.sym, "BUY", sl.qty, config);
                     if (order) {
-                        if(config.mode === 'demo') config.cap -= (sl.qty * s.p / config.lev); 
-                        sl.totalCost += (sl.qty * s.p);
+                        let stepTradeVal = sl.qty * s.p;
+                        let stepMargin = stepTradeVal / config.lev;
+                        let stepFee = stepTradeVal * feeRate;
+
+                        if(config.mode === 'demo') config.cap -= stepMargin; 
+                        sl.totalCost += stepTradeVal;
                         sl.qty = parseFloat(sl.qty) * 2;
                         sl.buy = sl.totalCost / sl.qty;
                         sl.dca += 1; sl.sell = sl.buy * 1.0035; sl.be = false;
-                        saveUser(userId, config);
                         
-                        const dcaMsg = `🌀 <b>DCA EXECUTED: #${sl.sym}</b>\n----------------------------------\n📊 ধাপ: লেভেল ${sl.dca}\n🎯 ট্রিগার প্রাইস: $${s.p}\n📉 নতুন গড় মূল্য: $${sl.buy.toFixed(4)}\n💰 মোট ইনভেস্টমেন্ট: $${(sl.totalCost / config.lev).toFixed(2)}\n----------------------------------\n_মার্কেট রিকভারি এবং টার্গেট অ্যাডজাস্ট করা হয়েছে।_`;
+                        saveUser(userId, { cap: config.cap, userSlots: config.userSlots });
+
+                        const dcaMsg = `🌀 <b>DCA EXECUTED: #${sl.sym}</b>\n----------------------------------\n📊 ধাপ: লেভেল ${sl.dca}\n🎯 ট্রিগার প্রাইস: $${s.p}\n📉 নতুন গড় মূল্য: $${sl.buy.toFixed(4)}\n💰 বর্তমান মার্জিন: $${stepMargin.toFixed(2)}\n⛽ বর্তমান ফী: $${stepFee.toFixed(4)}\n📊 বর্তমান মোট: $${(stepMargin + stepFee).toFixed(2)}\n📉 মোট মার্জিন ইনভেস্ট: $${(sl.totalCost / config.lev).toFixed(2)}\n----------------------------------`;
                         sendTG(dcaMsg, config.cid);
                     }
                 }
 
-                // প্রফিট ক্লোজিং
-                let totalTradeVolume = sl.totalCost + (sl.qty * s.p);
-                let exactFeeUSD = totalTradeVolume * feeRate; 
+                let totalVolume = sl.totalCost + (sl.qty * s.p);
+                let exactFeeUSD = totalVolume * feeRate; 
                 let grossGainUSD = (sl.qty * s.p) - sl.totalCost;
                 let netGainUSD = grossGainUSD - exactFeeUSD;
 
@@ -134,43 +143,40 @@ async function startGlobalEngine() {
                     sl.status = 'COOLING'; 
                     config.profit += netGainUSD; config.count += 1;
                     if(config.mode === 'demo') config.cap += netGainUSD + (sl.totalCost / config.lev); 
-                    saveUser(userId, config);
                     
-                    const report = `✅ <b>TRADE CLOSED: #${sl.sym}</b>\n----------------------------------\n💵 গ্রস প্রফিট: ৳${(grossGainUSD * 124).toFixed(2)}\n⛽ মোট ফী (${config.fMode.toUpperCase()}): ৳${(exactFeeUSD * 124).toFixed(2)}\n✨ নিট লাভ: ৳${(netGainUSD * 124).toFixed(0)}\n📈 সাগর জমা: ৳${(config.profit * 124).toFixed(0)}\n----------------------------------\n_সফলভাবে লাভ বুক করা হয়েছে!_`;
+                    const report = `✅ <b>TRADE CLOSED: #${sl.sym}</b>\n----------------------------------\n💵 গ্রস প্রফিট: ৳${(grossGainUSD * 124).toFixed(2)}\n⛽ মোট ফী (${config.fMode.toUpperCase()}): ৳${(exactFeeUSD * 124).toFixed(2)}\n✨ নিট লাভ: ৳${(netGainUSD * 124).toFixed(2)}\n📈 মোট জমা: ৳${(config.profit * 124).toFixed(2)}\n----------------------------------`;
                     sendTG(report, config.cid);
                     
                     if(config.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, config);
-                    setTimeout(() => { sl.active = false; sl.status = 'IDLE'; }, 1000);
+                    setTimeout(() => { 
+                        sl.active = false; sl.status = 'IDLE'; 
+                        saveUser(userId, { profit: config.profit, count: config.count, cap: config.cap, userSlots: config.userSlots });
+                    }, 1000);
                 }
             });
 
-            // এন্ট্রি লজিক
-            const slotIdx = userSlots[userId].findIndex(sl => !sl.active);
+            const slotIdx = config.userSlots.findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 2) {
                 const sma = s.history.reduce((a,b)=>a+b, 0)/s.history.length;
                 const localHigh = Math.max(...s.history);
-                const isDip = s.p < sma && s.p < (localHigh * 0.9980);
-
-                if (isDip) {
-                    const sameCoin = userSlots[userId].filter(sl => sl.active && sl.sym === msg.s);
+                if (s.p < sma && s.p < (localHigh * 0.9980)) {
+                    const sameCoin = config.userSlots.filter(sl => sl.active && sl.sym === msg.s);
                     if (sameCoin.length === 0) {
                         const coin = COINS.find(c => c.s === msg.s);
-                        
-                        // আপনার শর্ত অনুযায়ী এন্ট্রি ক্যালকুলেশন
                         let tradeValueUSD = (config.cap * config.lev) / maxSlots / 20;
                         if (tradeValueUSD < 5) tradeValueUSD = 5; 
                         
                         const qty = (tradeValueUSD / s.p).toFixed(coin.qd);
+                        const marginEntry = tradeValueUSD / config.lev;
                         const entryFeeUSD = tradeValueUSD * feeRate;
-                        const totalEntryCost = tradeValueUSD + entryFeeUSD;
 
                         const order = await placeOrder(msg.s, "BUY", qty, config);
                         if (order) {
-                            if(config.mode === 'demo') config.cap -= (qty * s.p / config.lev); 
-                            saveUser(userId, config);
-                            userSlots[userId][slotIdx] = { id: slotIdx, active: true, status: 'TRADING', sym: msg.s, buy: s.p, sell: s.p * 1.0040, slP: 0, qty: qty, pnl: 0, curP: s.p, dca: 0, totalCost: (qty * s.p), be: false };
+                            if(config.mode === 'demo') config.cap -= marginEntry; 
+                            config.userSlots[slotIdx] = { id: slotIdx, active: true, status: 'TRADING', sym: msg.s, buy: s.p, sell: s.p * 1.0040, slP: 0, qty: qty, pnl: 0, curP: s.p, dca: 0, totalCost: (qty * s.p), be: false };
+                            saveUser(userId, { cap: config.cap, userSlots: config.userSlots });
                             
-                            const entryMsg = `🚀 <b>SAFE ENTRY: #${msg.s}</b>\n----------------------------------\n💰 এন্ট্রি ভ্যালু: $${tradeValueUSD.toFixed(2)}\n⛽ আনুমানিক ফী: $${entryFeeUSD.toFixed(4)}\n📉 মোট খরচ: $${totalEntryCost.toFixed(2)}\n----------------------------------\n_কোয়ান্টাম ইঞ্জিন সফলভাবে এন্ট্রি নিয়েছে।_`;
+                            const entryMsg = `🚀 <b>SAFE ENTRY: #${msg.s}</b>\n----------------------------------\n💰 মার্জিন এন্ট্রি: $${marginEntry.toFixed(2)}\n⛽ আনুমানিক ফী: $${entryFeeUSD.toFixed(4)}\n📉 মোট খরচ: $${(marginEntry + entryFeeUSD).toFixed(2)}\n----------------------------------`;
                             sendTG(entryMsg, config.cid);
                         }
                     }
@@ -190,33 +196,27 @@ const server = http.createServer(async (req, res) => {
         const uid = url.searchParams.get('id');
         const user = db[uid];
         const rawBalance = await getBinanceBalance(user || {});
-        let currentActiveCost = 0;
-        if (userSlots[uid]) userSlots[uid].forEach(sl => { if(sl.active) currentActiveCost += (sl.totalCost / (user?.lev || 1)); });
-        let displayBalance = (parseFloat(rawBalance) - currentActiveCost).toFixed(2);
-        return res.end(JSON.stringify({ slots: userSlots[uid] || [], profit: user ? (user.profit * 124).toFixed(0) : 0, count: user ? user.count : 0, isPaused: user?.isPaused || false, balance: displayBalance, lev: user?.lev || 0 }));
+        let activeMargin = 0;
+        if (user?.userSlots) user.userSlots.forEach(sl => { if(sl.active) activeMargin += (sl.totalCost / (user?.lev || 1)); });
+        let displayBalance = (parseFloat(rawBalance) - activeMargin).toFixed(2);
+        return res.end(JSON.stringify({ slots: user?.userSlots || [], profit: user ? (user.profit * 124).toFixed(2) : 0, count: user ? user.count : 0, isPaused: user?.isPaused || false, balance: displayBalance, lev: user?.lev || 0 }));
     }
 
     if (url.pathname === '/register') { 
         const id = url.searchParams.get('id'); 
         saveUser(id, { 
-            api: url.searchParams.get('api'), 
-            sec: url.searchParams.get('sec'), 
-            cid: url.searchParams.get('cid'), 
-            cap: parseFloat(url.searchParams.get('cap'))||10, 
-            lev: parseInt(url.searchParams.get('lev'))||20, 
-            slots: parseInt(url.searchParams.get('slots'))||5, 
-            mode: url.searchParams.get('mode')||'live', 
-            fMode: url.searchParams.get('fmode')||'usdt', // নতুন ফি মোড
-            profit: 0, count: 0, isPaused: false 
+            api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: url.searchParams.get('cid'), 
+            cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, 
+            slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', 
+            fMode: url.searchParams.get('fmode')||'usdt', profit: 0, count: 0, isPaused: false, userSlots: [] 
         }); 
-        sendTG("🚀 <b>System Initialized!</b>", url.searchParams.get('cid')); 
+        sendTG("🚀 System Active!", url.searchParams.get('cid')); 
         res.writeHead(302, { 'Location': '/' + id }); return res.end(); 
     }
 
-    // আগের বাকি সব পাথ (reset, logout, toggle-pause) অক্ষুণ্ণ আছে...
-    if (url.pathname === '/reset-logout') { const id = url.searchParams.get('id'); if (db[id]) { db[id].profit = 0; db[id].count = 0; saveUser(id, db[id]); userSlots[id] = null; } res.writeHead(302, { 'Location': '/' }); return res.end(); }
-    if (url.pathname === '/toggle-pause') { const uid = url.searchParams.get('id'); if (db[uid]) { db[uid].isPaused = !db[uid].isPaused; saveUser(uid, db[uid]); } res.writeHead(200); return res.end("OK"); }
-    if (url.pathname === '/reset') { const id = url.searchParams.get('id'); if (db[id]) { db[id].profit = 0; db[id].count = 0; saveUser(id, db[id]); userSlots[id] = null; } res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/reset-logout') { const id = url.searchParams.get('id'); if (db[id]) { delete db[id]; fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
+    if (url.pathname === '/toggle-pause') { const uid = url.searchParams.get('id'); if (db[uid]) { db[uid].isPaused = !db[uid].isPaused; saveUser(uid, {isPaused: db[uid].isPaused}); } res.writeHead(200); return res.end("OK"); }
+    if (url.pathname === '/reset') { const id = url.searchParams.get('id'); if (db[id]) { db[id].profit = 0; db[id].count = 0; saveUser(id, {profit: 0, count: 0, userSlots: []}); } res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !db[userId]) {
@@ -232,8 +232,7 @@ const server = http.createServer(async (req, res) => {
         <div class="grid grid-cols-3 gap-2"><input name="cap" type="number" placeholder="Cap $" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="lev" type="number" placeholder="Lev" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="slots" type="number" placeholder="Slots" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"></div>
         <button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black text-xl text-white uppercase">Start Dream</button></form></div></body></html>`);
     } else {
-        // ড্যাশবোর্ড অংশ আগের মতোই অক্ষুণ্ণ আছে...
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-w-xl mx-auto space-y-4"><div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 tracking-widest uppercase italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p><div class="mt-2 text-[10px] text-slate-500 font-bold">Leverage: <span id="levText">0</span>x</div></div><div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest font-black">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div></div><div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400 tracking-widest font-black">Pause</button><a href="/reset?id=${userId}" onclick="return confirm('রিসেট করবেন?')" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black tracking-widest italic uppercase">Reset</a></div><a href="/reset-logout?id=${userId}" onclick="return confirm('লগ আউট করবেন? সব ডাটা মুছে যাবে।')" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black tracking-widest uppercase">Logout & Reset System</a></div><script>async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const data = await res.json(); document.getElementById('balanceText').innerText = data.balance; document.getElementById('profitText').innerText = data.profit; document.getElementById('countText').innerText = data.count; document.getElementById('levText').innerText = data.lev; const pBtn = document.getElementById('pauseBtn'); if(data.isPaused) { pBtn.innerText = "RESUME"; pBtn.className = "flex-1 bg-green-900/20 border border-green-500/30 text-green-400 py-5 rounded-full text-[10px] font-black"; } else { pBtn.innerText = "PAUSE"; pBtn.className = "flex-1 bg-orange-900/20 border border-orange-500/30 text-orange-400 py-5 rounded-full text-[10px] font-black"; } let html = ''; data.slots.forEach((s, i) => { let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0; html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 transition-all duration-300 mb-3 shadow-lg uppercase">
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-w-xl mx-auto space-y-4"><div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 tracking-widest uppercase italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p><div class="mt-2 text-[10px] text-slate-500 font-bold">Leverage: <span id="levText">0</span>x</div></div><div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest font-black">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div></div><div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400 tracking-widest font-black">Pause</button><a href="/reset?id=${userId}" onclick="return confirm('রিসেট করবেন?')" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black tracking-widest italic uppercase">Reset</a></div><a href="/reset-logout?id=${userId}" onclick="return confirm('লগ আউট করবেন?')" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black tracking-widest uppercase">Logout & Reset</a></div><script>async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const data = await res.json(); document.getElementById('balanceText').innerText = data.balance; document.getElementById('profitText').innerText = data.profit; document.getElementById('countText').innerText = data.count; document.getElementById('levText').innerText = data.lev; const pBtn = document.getElementById('pauseBtn'); if(data.isPaused) { pBtn.innerText = "RESUME"; pBtn.className = "flex-1 bg-green-900/20 border border-green-500/30 text-green-400 py-5 rounded-full text-[10px] font-black"; } else { pBtn.innerText = "PAUSE"; pBtn.className = "flex-1 bg-orange-900/20 border border-orange-500/30 text-orange-400 py-5 rounded-full text-[10px] font-black"; } let html = ''; data.slots.forEach((s, i) => { let meter = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0; html += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 transition-all duration-300 mb-3 shadow-lg uppercase">
                                     <div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.pnl>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}%</span>\` : ''}</div>
                                     \${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${meter}%"></div></div>
                                     <div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Entry: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-orange-400">Safe Growth Mode</div><div class="text-right text-green-500 font-bold">Dynamic Target</div></div>\` : ''}
