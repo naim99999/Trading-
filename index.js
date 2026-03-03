@@ -93,7 +93,7 @@ async function startGlobalEngine() {
                 sl.curP = s.p;
 
                 let rawPnL = ((s.p - sl.buy) / sl.buy) * 100 * config.lev;
-                sl.pnl = rawPnL - 0.15; // নিট হিসাব (ফী বাদ দিয়ে)
+                sl.pnl = rawPnL - 0.15; 
 
                 // শিল্ড এক্টিভেশন
                 if (rawPnL >= 0.35) {
@@ -110,7 +110,7 @@ async function startGlobalEngine() {
                 if (rawPnL <= dcaTrigger && sl.dca < 5) {
                     const order = await placeOrder(sl.sym, "BUY", sl.qty, config);
                     if (order) {
-                        if(config.mode === 'demo') config.cap -= (sl.qty * s.p / config.lev); // ডেমোতে ডলার কাটা
+                        if(config.mode === 'demo') config.cap -= (sl.qty * s.p / config.lev); 
                         sl.totalCost += (sl.qty * s.p);
                         sl.qty = parseFloat(sl.qty) * 2;
                         sl.buy = sl.totalCost / sl.qty;
@@ -125,7 +125,7 @@ async function startGlobalEngine() {
                 if ((s.p >= sl.sell || (sl.be && s.p <= sl.slP)) && (netGainUSD * 124) >= 1) {
                     sl.status = 'COOLING'; 
                     config.profit += netGainUSD; config.count += 1;
-                    if(config.mode === 'demo') config.cap += netGainUSD + (sl.totalCost / config.lev); // ডেমোতে লাভ যোগ
+                    if(config.mode === 'demo') config.cap += netGainUSD + (sl.totalCost / config.lev); 
                     saveUser(userId, config);
                     const report = `✅ <b>TRADE CLOSED!</b>\n🔸 #${sl.sym}\n💵 লাভ: ৳${(netGainUSD * 124).toFixed(0)}\n📈 সাগর জমা: ৳${(config.profit * 124).toFixed(0)}`;
                     sendTG(report, config.cid);
@@ -134,7 +134,7 @@ async function startGlobalEngine() {
                 }
             });
 
-            // এন্ট্রি লজিক (অপরিবর্তিত v60.0 লজিক)
+            // এন্ট্রি লজিক (পরিবর্তিত ক্যালকুলেশন)
             const slotIdx = userSlots[userId].findIndex(sl => !sl.active);
             if (!config.isPaused && slotIdx !== -1 && s.trend >= 2) {
                 const sma = s.history.reduce((a,b)=>a+b, 0)/s.history.length;
@@ -145,10 +145,20 @@ async function startGlobalEngine() {
                     const sameCoin = userSlots[userId].filter(sl => sl.active && sl.sym === msg.s);
                     if (sameCoin.length === 0) {
                         const coin = COINS.find(c => c.s === msg.s);
-                        const qty = ((config.cap / (maxSlots * 4) * config.lev) / s.p).toFixed(coin.qd);
+                        
+                        // --- আপনার নতুন লজিক অনুযায়ী এন্ট্রি ক্যালকুলেশন ---
+                        let totalLeveragedCap = config.cap * config.lev;
+                        let perSlotCap = totalLeveragedCap / maxSlots;
+                        let tradeValueUSD = perSlotCap / 20; // ২০ ভাগের ১ ভাগ
+                        
+                        if (tradeValueUSD < 5) tradeValueUSD = 5; // বাইনান্সের মিনিমাম ৫ ডলার লজিক
+                        
+                        const qty = (tradeValueUSD / s.p).toFixed(coin.qd);
+                        // -------------------------------------------
+
                         const order = await placeOrder(msg.s, "BUY", qty, config);
                         if (order) {
-                            if(config.mode === 'demo') config.cap -= (qty * s.p / config.lev); // ডেমোতে ডলার কাটা
+                            if(config.mode === 'demo') config.cap -= (qty * s.p / config.lev); 
                             saveUser(userId, config);
                             userSlots[userId][slotIdx] = { id: slotIdx, active: true, status: 'TRADING', sym: msg.s, buy: s.p, sell: s.p * 1.0040, slP: 0, qty: qty, pnl: 0, curP: s.p, dca: 0, totalCost: (qty * s.p), be: false };
                             sendTG(`🚀 <b>SAFE ENTRY:</b> #${msg.s}`, config.cid);
