@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v71.2 - Final Master
+// 🛡️ Quantum AI Master v72.5 - Full Dynamic
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -64,6 +64,7 @@ async function placeOrder(sym, side, qty, c) {
 
 async function startGlobalEngine() {
     const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${COINS.map(c => `${c.s.toLowerCase()}@ticker`).join('/')}`);
+    
     ws.on('message', (data) => {
         const payload = JSON.parse(data).data;
         if (!payload || !market[payload.s]) return;
@@ -82,6 +83,7 @@ async function startGlobalEngine() {
             let maxSl = parseInt(u.slots) || 5, feeR = u.fMode === 'bnb' ? 0.00045 : 0.0005;
             if (!u.userSlots || u.userSlots.length !== maxSl) { u.userSlots = Array(maxSl).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, sell: 0, slP: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, be: false, status: 'IDLE' })); saveDB(); }
 
+            let guardianActive = u.userSlots.some(s => s.active && s.dca >= 3);
             let btc = market["BTCUSDT"]?.btcTrend || 0;
             let pulse = btc > 0.05 ? "fast" : (btc < -0.1 ? "safe" : "normal");
             if (u.isAuto) u.tSpeed = pulse;
@@ -105,7 +107,7 @@ async function startGlobalEngine() {
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
                         sl.totalCost += stMV; sl.qty = (parseFloat(sl.qty) * 2).toString(); sl.buy = sl.totalCost / parseFloat(sl.qty);
                         sl.dca++; sl.sell = sl.buy * 1.0035; sl.be = false; saveDB();
-                        sendTG(`🌀 <b>DCA EXECUTED: #${sl.sym}</b>\n----------------------------------\n📊 ধাপ: লেভেল ${sl.dca}\n🎯 ট্রিগার: $${ms.p}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}\n💰 বর্তমান মার্জিন: $${stM.toFixed(4)}\n📉 মোট মার্জিন ইনভেস্ট: $${(sl.totalCost / u.lev).toFixed(4)}\n----------------------------------`, u.cid);
+                        sendTG(`🌀 <b>DCA EXECUTED: #${sl.sym}</b>\n----------------------------------\n📊 ধাপ: লেভেল ${sl.dca}\n💰 মার্জিন: $${stM.toFixed(4)}\n📉 মোট মার্জিন ইনভেস্ট: $${(sl.totalCost / u.lev).toFixed(4)}\n----------------------------------`, u.cid);
                     }
                 }
 
@@ -120,14 +122,14 @@ async function startGlobalEngine() {
             });
 
             const sIdx = u.userSlots.findIndex(sl => !sl.active);
-            if (!u.isPaused && sIdx !== -1) {
+            if (!u.isPaused && sIdx !== -1 && !guardianActive) {
                 let rLim = u.tSpeed === 'fast' ? 48 : (u.tSpeed === 'safe' ? 35 : 42);
                 let dLim = u.tSpeed === 'fast' ? 0.9975 : (u.tSpeed === 'safe' ? 0.9945 : 0.9965);
                 for (let sym of Object.keys(market)) {
                     const ms = market[sym]; if (ms.p === 0 || ms.history.length < 20) continue;
                     if (ms.p < (Math.max(...ms.history) * dLim) && calculateRSI(ms.history) < rLim && ms.p > (ms.low * 1.0003)) {
                         if (u.userSlots.filter(x => x.active && x.sym === sym).length === 0) {
-                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), qty = (tV / ms.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev, eF = tV * feeR;
+                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), coin = COINS.find(c => c.s === sym), qty = (tV / ms.p).toFixed(coin.qd), mE = tV / u.lev, eF = tV * feeR;
                             if (await placeOrder(sym, "BUY", qty, u)) {
                                 if(u.mode === 'demo') u.cap = Number(u.cap) - mE;
                                 u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0040, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false };
@@ -140,7 +142,7 @@ async function startGlobalEngine() {
                 }
             }
         }
-    }, 1200);
+    }, 1000);
     ws.on('close', () => setTimeout(startGlobalEngine, 3000));
 }
 
@@ -152,13 +154,14 @@ const server = http.createServer(async (req, res) => {
         const rawB = await getBinanceBalance(u || {});
         let btcT = market["BTCUSDT"]?.btcTrend || 0, pS = btcT > 0.05 ? "BULLISH" : (btcT < -0.1 ? "BEARISH" : "NEUTRAL");
         let activeM = u?.userSlots?.reduce((a, s) => a + (s.active ? s.totalCost/u.lev : 0), 0) || 0;
-        return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btcT.toFixed(2), isAuto: u?.isAuto || false }));
+        let gA = u?.userSlots?.some(s => s.active && s.dca >= 3);
+        return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btcT.toFixed(2), isAuto: u?.isAuto || false, guardian: gA }));
     }
     if (url.pathname === '/set-speed') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, userSlots: [] }; saveDB(); sendTG("🚀 <b>System Active!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/reset') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.profit = 0; u.count = 0; u.userSlots = []; saveDB(); } res.writeHead(302, { 'Location': '/' + url.searchParams.get('id') }); return res.end(); }
-    if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !cachedUsers[userId]) {
@@ -168,7 +171,7 @@ const server = http.createServer(async (req, res) => {
         <div class="p-4 bg-slate-900 rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden">
             <div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div>
             <div class="flex justify-between items-center mt-1">
-                <div><p class="text-[8px] text-slate-500 font-bold">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p></div>
+                <div><p class="text-[8px] text-slate-500 font-bold" id="gMsg">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p></div>
                 <div class="flex gap-1">
                     <button onclick="setSpeed('fast', false)" id="btn-fast" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚡</button>
                     <button onclick="setSpeed('normal', false)" id="btn-normal" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚖️</button>
@@ -185,7 +188,8 @@ const server = http.createServer(async (req, res) => {
                 const res = await fetch('/api/data?id=${userId}'); const d = await res.json();
                 document.getElementById('balanceText').innerText = d.balance; document.getElementById('profitText').innerText = d.profit;
                 document.getElementById('countText').innerText = d.count; document.getElementById('levText').innerText = d.lev;
-                const pM = document.getElementById('pM'); const pB = document.getElementById('pB');
+                const pM = document.getElementById('pM'); const pB = document.getElementById('pB'); const gM = document.getElementById('gMsg');
+                if(d.guardian) { gM.innerText = "🛡️ GUARDIAN ACTIVE"; gM.className="text-[8px] font-bold text-red-500 animate-pulse"; } else { gM.innerText = "BTC Market Pulse"; gM.className="text-[8px] text-slate-500 font-bold"; }
                 if(d.pulse === "BULLISH") { pM.innerText = "📈 Bullish ("+d.btcVal+"%)"; pM.className="text-[10px] font-black text-green-400"; pB.className="absolute top-0 left-0 h-1 bg-green-500 w-full shadow-[0_0_10px_#22c55e]"; }
                 else if(d.pulse === "BEARISH") { pM.innerText = "⚠️ Bearish ("+d.btcVal+"%)"; pM.className="text-[10px] font-black text-red-500"; pB.className="absolute top-0 left-0 h-1 bg-red-500 w-full shadow-[0_0_10px_#ef4444]"; }
                 else { pM.innerText = "⚖️ Stable ("+d.btcVal+"%)"; pM.className="text-[10px] font-black text-sky-400"; pB.className="absolute top-0 left-0 h-1 bg-sky-500 w-full shadow-[0_0_10px_#0ea5e9]"; }
