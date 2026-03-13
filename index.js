@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v76.0 - Final Master
+// 🛡️ Quantum AI Master v76.0 - Final Fast Master
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -72,8 +72,10 @@ async function startGlobalEngine() {
             if (!u.userSlots || u.userSlots.length !== maxSl) u.userSlots = Array(maxSl).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, sell: 0, slP: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, be: false, status: 'IDLE', netBDT: 0 }));
             if (!u.cooldowns) u.cooldowns = {};
 
-            let btcT = market["BTCUSDT"]?.btcTrend || 0;
-            if (u.isAuto) u.tSpeed = btcT > 0.05 ? "fast" : (btcT < -0.1 ? "safe" : "normal");
+            if (u.isAuto) {
+                let btcT = market["BTCUSDT"]?.btcTrend || 0;
+                u.tSpeed = btcT > 0.05 ? "fast" : (btcT < -0.1 ? "safe" : "normal");
+            }
 
             u.userSlots.forEach(async (sl) => {
                 if (!sl.active || sl.status !== 'TRADING') return;
@@ -91,8 +93,7 @@ async function startGlobalEngine() {
                 }
 
                 let dcaT = sl.dca === 0 ? -1.8 : (sl.dca === 1 ? -4.5 : -9.5);
-                let currentMarginInUse = sl.totalCost / u.lev;
-                if (rawPnL <= dcaT && sl.dca < 4 && currentMarginInUse * 2 < (u.cap * 0.85)) {
+                if (rawPnL <= dcaT && sl.dca < 4 && (sl.totalCost / u.lev) * 2 < (u.cap * 0.85)) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
                         let stMV = parseFloat(sl.qty) * ms.p, stM = stMV / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
@@ -116,14 +117,14 @@ async function startGlobalEngine() {
             const sIdx = u.userSlots.findIndex(sl => !sl.active);
             let anyDanger = u.userSlots.some(s => s.active && s.dca >= 2);
             if (!u.isPaused && sIdx !== -1 && !anyDanger) {
-                let rLim = u.tSpeed === 'fast' ? 45 : (u.tSpeed === 'safe' ? 32 : 38);
-                let dLim = u.tSpeed === 'fast' ? 0.9970 : (u.tSpeed === 'safe' ? 0.9930 : 0.9950);
+                let rLim = u.tSpeed === 'fast' ? 48 : (u.tSpeed === 'safe' ? 35 : 42);
+                let dLim = u.tSpeed === 'fast' ? 0.9975 : (u.tSpeed === 'safe' ? 0.9945 : 0.9965);
                 for (let sym of Object.keys(market)) {
                     const ms = market[sym]; if (ms.p === 0 || (u.cooldowns[sym] && Date.now() < u.cooldowns[sym])) continue;
                     const localHigh = Math.max(...ms.history);
-                    if (ms.p < (localHigh * dLim) && calculateRSI(ms.history) < rLim && ms.p > (ms.low * 1.0004)) {
+                    if (ms.p < (localHigh * dLim) && calculateRSI(ms.history) < rLim && ms.p > (ms.low * 1.0003)) {
                         if (!u.userSlots.some(x => x.active && x.sym === sym)) {
-                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), coin = COINS.find(c => c.s === sym), qty = (tV / ms.p).toFixed(coin.qd), mE = tV / u.lev;
+                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), qty = (tV / ms.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
                             if (await placeOrder(sym, "BUY", qty, u)) {
                                 if(u.mode === 'demo') u.cap = Number(u.cap) - mE;
                                 u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0035, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false, netBDT: -0.10 };
@@ -150,7 +151,7 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btc.btcTrend.toFixed(2), btcPrice: btc.p.toFixed(2), isAuto: u?.isAuto || false, guardian: u?.userSlots?.some(s => s.active && s.dca >= 2), cdSec: u?.cdSec || 300 }));
     }
     if (url.pathname === '/set-config') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; u.cdSec = parseInt(url.searchParams.get('cd')) || 300; saveDB(); } res.writeHead(200); return res.end(); }
-    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 300, userSlots: [], cooldowns: {} }; saveDB(); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 300, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>System Active!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/reset') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.profit = 0; u.count = 0; u.userSlots = []; u.cooldowns = {}; saveDB(); } res.writeHead(302, { 'Location': '/' + url.searchParams.get('id') }); return res.end(); }
@@ -161,12 +162,14 @@ const server = http.createServer(async (req, res) => {
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-width-xl mx-auto space-y-4">
         <div class="p-4 bg-slate-900 rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold" id="gMsg">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="flex gap-1"><button onclick="setConfig('fast', false)" id="btn-fast" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚡</button><button onclick="setConfig('normal', false)" id="btn-normal" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚖️</button><button onclick="setConfig('safe', false)" id="btn-safe" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">🛡️</button><button onclick="setConfig('', true)" id="btn-auto" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">🤖 AUTO</button></div></div></div>
-        <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 uppercase tracking-widest italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p><div class="mt-2 text-[10px] text-slate-500 font-bold flex justify-between px-10"><span>Lev: <span id="levText">0</span>x</span> <span>CD: <input type="number" id="cdIn" class="bg-transparent border-b border-sky-500 w-10 text-center outline-none" onchange="updateCD()">s</span></div></div><div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest font-black">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div></div><div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset?id=${userId}" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black">Reset</a></div><a href="/reset-logout?id=${userId}" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout & Reset</a></div><script>
+        <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 uppercase tracking-widest italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p><div class="mt-2 text-[10px] text-slate-500 font-bold flex justify-between px-10"><span>Lev: <span id="levText">0</span>x</span> <span>CD: <input type="number" id="cdIn" class="bg-transparent border-b border-sky-500 w-10 text-center outline-none" onchange="updateCD()">s</span></div></div><div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest font-black">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div></div><div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset?id=${userId}" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black">Reset</a></div><a href="/reset-logout?id=${userId}" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout & Reset System</a></div><script>
             let curCD = 300; let curS = 'normal'; let curA = true;
             async function setConfig(s, a) { curS = s || curS; curA = a; await fetch(\`/set-config?id=${userId}&speed=\${curS}&auto=\${curA}&cd=\${curCD}\`); updateData(); }
             async function updateCD() { curCD = document.getElementById('cdIn').value; await setConfig(curS, curA); }
             async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }
-            async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const d = await res.json(); document.getElementById('balanceText').innerText = d.balance; document.getElementById('profitText').innerText = d.profit; document.getElementById('countText').innerText = d.count; document.getElementById('levText').innerText = d.lev; document.getElementById('cdIn').value = d.cdSec; curCD = d.cdSec;
+            async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const d = await res.json(); 
+                document.getElementById('balanceText').innerText = d.balance; document.getElementById('profitText').innerText = d.profit;
+                document.getElementById('countText').innerText = d.count; document.getElementById('levText').innerText = d.lev; document.getElementById('cdIn').value = d.cdSec; curCD = d.cdSec;
                 const pM = document.getElementById('pM'); const pB = document.getElementById('pB'); const gM = document.getElementById('gMsg'); const pP = document.getElementById('pP');
                 pP.innerText = "BTC: $" + d.btcPrice;
                 if(d.guardian) { gM.innerText = "🛡️ SHIELD ACTIVE"; gM.className="text-[8px] font-bold text-red-500 animate-pulse"; } else { gM.innerText = "BTC Market Pulse"; gM.className="text-[8px] text-slate-500 font-bold"; }
