@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v90.0 - Storm Runner Pro
+// 🛡️ Quantum AI Master v100.0 - THE BEAST (Elite)
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -60,7 +60,7 @@ async function startGlobalEngine() {
     ws.on('message', (data) => {
         const d = JSON.parse(data).data; if (!d || !market[d.s]) return;
         const s = market[d.s]; s.lp = s.p; s.p = parseFloat(d.c);
-        s.history.push(s.p); if(s.history.length > 50) s.history.shift();
+        s.history.push(s.p); if(s.history.length > 30) s.history.shift();
         s.trend = s.p > s.lp ? Math.min(10, (s.trend || 0) + 1) : (s.p < s.lp ? 0 : s.trend);
         if (s.p < s.low || s.low === 0) s.low = s.p;
         if (d.s === "BTCUSDT" && s.history.length > 5) s.btcTrend = ((s.p - s.history[0]) / s.history[0] * 100);
@@ -77,7 +77,6 @@ async function startGlobalEngine() {
                 u.tSpeed = btcT > 0.02 ? "fast" : (btcT < -0.1 ? "safe" : "normal");
             }
 
-            // টিমওয়ার্ক চেক: কয়টি স্লট বর্তমানে ফাঁকা?
             let idleSlots = u.userSlots.filter(s => !s.active).length;
 
             u.userSlots.forEach(async (sl) => {
@@ -87,22 +86,22 @@ async function startGlobalEngine() {
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
                 if (rawPnL >= 0.30) {
-                    let lockP = rawPnL - 0.01; if (ms.trend >= 7) lockP = rawPnL - 0.03;
+                    let lockP = rawPnL - 0.01; if (ms.trend >= 7) lockP = rawPnL - 0.02;
                     if (!sl.be || lockP > sl.slP) { sl.slP = lockP; sl.be = true; }
                 }
 
-                // --- সাধ্যমতো DCA লজিক (আপনার নতুন শর্ত) ---
-                let dcaT = sl.dca === 0 ? -1.8 : -4.5;
-                // যদি অন্য সব স্লট ফাঁকা থাকে, তবে সামান্য লসেই (-১.০%) সেধে DCA করবে দ্রুত রিকভারির জন্য
-                if (idleSlots === (maxSl - 1) && rawPnL <= -1.0) dcaT = -1.0; 
+                // --- অ্যাগ্রেসিভ সেলফ-রিকভারি লজিক ---
+                let dcaT = sl.dca === 0 ? -1.6 : -4.0;
+                // যদি অন্য স্লট ফাঁকা থাকে, আরও দ্রুত DCA করে বের হবে (-০.৮% হলেই)
+                if (idleSlots === (maxSl - 1) && rawPnL <= -0.8 && sl.dca < 2) dcaT = -0.8; 
 
                 if (rawPnL <= dcaT && sl.dca < (u.cap < 10 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.95) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
-                        let stM = (parseFloat(sl.qty) * ms.p) / u.lev;
+                        let stMV = parseFloat(sl.qty) * ms.p, stM = stMV / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
-                        sl.totalCost += (parseFloat(sl.qty) * ms.p); sl.qty = (parseFloat(sl.qty) * 2).toString();
-                        sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.sell = sl.buy * 1.0030; sl.be = false; saveDB();
-                        sendTG(`🌀 <b>EARLY RESCUE: #${sl.sym}</b>\n💰 মার্জিন: $${stM.toFixed(4)}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}`, u.cid);
+                        sl.totalCost += stMV; sl.qty = (parseFloat(sl.qty) * 2).toString(); sl.buy = sl.totalCost / parseFloat(sl.qty);
+                        sl.dca++; sl.sell = sl.buy * 1.0030; sl.be = false; saveDB();
+                        sendTG(`🌀 <b>RESCUE: #${sl.sym}</b>\n💰 মার্জিন: $${stM.toFixed(4)}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}`, u.cid);
                     }
                 }
 
@@ -112,25 +111,26 @@ async function startGlobalEngine() {
                     if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.netBDT / 124) + (sl.totalCost / u.lev);
                     sendTG(`✅ <b>CLOSED: #${sl.sym}</b>\n✨ লাভ: ৳${sl.netBDT.toFixed(2)}\n📈 মোট: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
                     if(u.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, u);
-                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 30) * 1000); // ডিফল্ট ৩০ সেকেন্ড কুলডাউন
+                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 30) * 1000);
                     setTimeout(() => { Object.assign(sl, { active: false, status: 'IDLE' }); saveDB(); }, 800);
                 }
             });
 
             const sIdx = u.userSlots.findIndex(sl => !sl.active);
             if (!u.isPaused && sIdx !== -1 && !u.userSlots.some(s => s.active && s.dca >= 3)) {
-                let rLim = u.tSpeed === 'fast' ? 65 : (u.tSpeed === 'safe' ? 35 : 48);
-                let dLim = u.tSpeed === 'fast' ? 0.9988 : (u.tSpeed === 'safe' ? 0.9940 : 0.9970);
+                // ঝড়ের গতির এন্ট্রি ফিল্টার
+                let rLim = u.tSpeed === 'fast' ? 70 : (u.tSpeed === 'safe' ? 35 : 55);
+                let dLim = u.tSpeed === 'fast' ? 0.9992 : (u.tSpeed === 'safe' ? 0.9940 : 0.9975);
                 for (let sym of Object.keys(market)) {
                     const ms = market[sym]; if (ms.p === 0 || (u.cooldowns[sym] && Date.now() < u.cooldowns[sym])) continue;
                     if (ms.p < (Math.max(...ms.history) * dLim) && calculateRSI(ms.history) < rLim && ms.p > (ms.low * 1.0001)) {
                         if (!u.userSlots.some(x => x.active && x.sym === sym)) {
-                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), qty = (tV / ms.p).toFixed(COINS.find(c => c.s === sym).qd);
+                            let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), qty = (tV / ms.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
                             if (await placeOrder(sym, "BUY", qty, u)) {
-                                if(u.mode === 'demo') u.cap = Number(u.cap) - (tV/u.lev);
-                                u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0035, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false, netBDT: -0.10 };
+                                if(u.mode === 'demo') u.cap = Number(u.cap) - mE;
+                                u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0035, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false, netBDT: -0.05 };
                                 ms.low = 0; saveDB();
-                                sendTG(`🚀 <b>STORM ENTRY: #${sym}</b>\n💰 মার্জিন: $${(tV/u.lev).toFixed(4)}`, u.cid);
+                                sendTG(`🚀 <b>BEAST ENTRY: #${sym}</b>\n💰 মার্জিন: $${mE.toFixed(4)}`, u.cid);
                             }
                             break;
                         }
@@ -152,7 +152,7 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btc.btcTrend.toFixed(2), btcPrice: btc.p.toFixed(2), isAuto: u?.isAuto || false, guardian: u?.userSlots?.some(s => s.active && s.dca >= 2), cdSec: u?.cdSec || 30 }));
     }
     if (url.pathname === '/set-config') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; u.cdSec = parseInt(url.searchParams.get('cd')) || 30; saveDB(); } res.writeHead(200); return res.end(); }
-    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 30, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Storm Pro Ready!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 30, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Beast Mode Activated!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/reset') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.profit = 0; u.count = 0; u.userSlots = []; u.cooldowns = {}; saveDB(); } res.writeHead(302, { 'Location': '/' + url.searchParams.get('id') }); return res.end(); }
@@ -184,7 +184,7 @@ const server = http.createServer(async (req, res) => {
                 document.getElementById('btn-auto').className = d.isAuto ? "px-2 py-2 rounded-lg text-[8px] font-black bg-indigo-600 text-white shadow-[0_0_10px_#6366f1]" : "px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800 text-slate-500";
                 const pBtn = document.getElementById('pauseBtn'); pBtn.innerText = d.isPaused ? "RESUME" : "PAUSE";
                 let h = ''; d.slots.forEach((s, i) => { let m = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
-                    h += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-indigo-400">Quantum Storm On</div><div class="text-right text-green-500 font-bold">Dynamic Target</div></div>\` : ''}</div>\`;
+                    h += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-indigo-400">Quantum Beast Mode</div><div class="text-right text-green-500 font-bold">Dynamic Target</div></div>\` : ''}</div>\`;
                 }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 800);</script></body></html>`);
     }
 });
