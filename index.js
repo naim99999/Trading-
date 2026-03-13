@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v100.0 - THE BEAST (Elite)
+// 🛡️ Quantum AI Master v100.0 - THE MASTERMIND
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -74,7 +74,7 @@ async function startGlobalEngine() {
 
             if (u.isAuto) {
                 let btcT = market["BTCUSDT"]?.btcTrend || 0;
-                u.tSpeed = btcT > 0.02 ? "fast" : (btcT < -0.1 ? "safe" : "normal");
+                u.tSpeed = btcT > 0.01 ? "fast" : (btcT < -0.05 ? "safe" : "normal");
             }
 
             let idleSlots = u.userSlots.filter(s => !s.active).length;
@@ -85,15 +85,16 @@ async function startGlobalEngine() {
                 sl.curP = ms.p; let rawPnL = ((ms.p - sl.buy) / sl.buy) * 100 * u.lev; sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
-                if (rawPnL >= 0.30) {
+                // অ্যাগ্রেসিভ ট্রেইলিং লক
+                if (rawPnL >= 0.25) {
                     let lockP = rawPnL - 0.01; if (ms.trend >= 7) lockP = rawPnL - 0.02;
                     if (!sl.be || lockP > sl.slP) { sl.slP = lockP; sl.be = true; }
                 }
 
-                // --- অ্যাগ্রেসিভ সেলফ-রিকভারি লজিক ---
-                let dcaT = sl.dca === 0 ? -1.6 : -4.0;
-                // যদি অন্য স্লট ফাঁকা থাকে, আরও দ্রুত DCA করে বের হবে (-০.৮% হলেই)
-                if (idleSlots === (maxSl - 1) && rawPnL <= -0.8 && sl.dca < 2) dcaT = -0.8; 
+                // স্মার্ট সেলফ-রিকভারি (সাধ্যমতো DCA)
+                let dcaT = sl.dca === 0 ? -1.5 : -4.0;
+                // যদি ব্যাকআপ ক্যাপিটাল থাকে এবং অন্য স্লট ফাঁকা থাকে, তবে দ্রুত DCA করবে
+                if (idleSlots === (maxSl - 1) && rawPnL <= -0.7 && sl.dca < 2) dcaT = -0.7; 
 
                 if (rawPnL <= dcaT && sl.dca < (u.cap < 10 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.95) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
@@ -101,7 +102,7 @@ async function startGlobalEngine() {
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
                         sl.totalCost += stMV; sl.qty = (parseFloat(sl.qty) * 2).toString(); sl.buy = sl.totalCost / parseFloat(sl.qty);
                         sl.dca++; sl.sell = sl.buy * 1.0030; sl.be = false; saveDB();
-                        sendTG(`🌀 <b>RESCUE: #${sl.sym}</b>\n💰 মার্জিন: $${stM.toFixed(4)}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}`, u.cid);
+                        sendTG(`🌀 <b>RESCUE: #${sl.sym} (L${sl.dca})</b>\n💰 খরচ: $${stM.toFixed(4)}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}`, u.cid);
                     }
                 }
 
@@ -109,28 +110,28 @@ async function startGlobalEngine() {
                 if ((ms.p >= sl.sell || (sl.be && rawPnL <= sl.slP)) && sl.netBDT >= minP) {
                     sl.status = 'COOLING'; u.profit = Number(u.profit || 0) + (sl.netBDT / 124); u.count++;
                     if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.netBDT / 124) + (sl.totalCost / u.lev);
-                    sendTG(`✅ <b>CLOSED: #${sl.sym}</b>\n✨ লাভ: ৳${sl.netBDT.toFixed(2)}\n📈 মোট: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
+                    sendTG(`✅ <b>CLOSED: #${sl.sym}</b>\n✨ নিট লাভ: ৳${sl.netBDT.toFixed(2)}\n📈 মোট জমা: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
                     if(u.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, u);
-                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 30) * 1000);
+                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 30) * 1000); // ৩০ সেকেন্ড কুলডাউন
                     setTimeout(() => { Object.assign(sl, { active: false, status: 'IDLE' }); saveDB(); }, 800);
                 }
             });
 
             const sIdx = u.userSlots.findIndex(sl => !sl.active);
             if (!u.isPaused && sIdx !== -1 && !u.userSlots.some(s => s.active && s.dca >= 3)) {
-                // ঝড়ের গতির এন্ট্রি ফিল্টার
-                let rLim = u.tSpeed === 'fast' ? 70 : (u.tSpeed === 'safe' ? 35 : 55);
-                let dLim = u.tSpeed === 'fast' ? 0.9992 : (u.tSpeed === 'safe' ? 0.9940 : 0.9975);
+                // ঝড়ের গতির এন্ট্রি ফিল্টার (Turbo Alpha)
+                let rLim = u.tSpeed === 'fast' ? 75 : (u.tSpeed === 'safe' ? 35 : 55);
+                let dLim = u.tSpeed === 'fast' ? 0.9995 : (u.tSpeed === 'safe' ? 0.9940 : 0.9980);
                 for (let sym of Object.keys(market)) {
                     const ms = market[sym]; if (ms.p === 0 || (u.cooldowns[sym] && Date.now() < u.cooldowns[sym])) continue;
                     if (ms.p < (Math.max(...ms.history) * dLim) && calculateRSI(ms.history) < rLim && ms.p > (ms.low * 1.0001)) {
                         if (!u.userSlots.some(x => x.active && x.sym === sym)) {
                             let tV = Math.max(5.1, (u.cap * u.lev) / maxSl / 20), qty = (tV / ms.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
                             if (await placeOrder(sym, "BUY", qty, u)) {
-                                if(u.mode === 'demo') u.cap = Number(u.cap) - mE;
+                                if(u.mode === 'demo') u.cap = Number(u.cap) - (tV/u.lev);
                                 u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0035, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false, netBDT: -0.05 };
                                 ms.low = 0; saveDB();
-                                sendTG(`🚀 <b>BEAST ENTRY: #${sym}</b>\n💰 মার্জিন: $${mE.toFixed(4)}`, u.cid);
+                                sendTG(`🚀 <b>MASTER ENTRY: #${sym}</b>\n💰 মার্জিন: $${mE.toFixed(4)}\n⚙️ মোড: ${u.tSpeed.toUpperCase()}`, u.cid);
                             }
                             break;
                         }
@@ -147,12 +148,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/data') {
         const u = cachedUsers[url.searchParams.get('id')]; const rawB = await getBinanceBalance(u || {});
         let btc = market["BTCUSDT"] || { btcTrend: 0, p: 0 };
-        let pS = btc.btcTrend > 0.04 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL");
+        let pS = btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL");
         let activeM = u?.userSlots?.reduce((a, s) => a + (s.active ? s.totalCost/u.lev : 0), 0) || 0;
         return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btc.btcTrend.toFixed(2), btcPrice: btc.p.toFixed(2), isAuto: u?.isAuto || false, guardian: u?.userSlots?.some(s => s.active && s.dca >= 2), cdSec: u?.cdSec || 30 }));
     }
     if (url.pathname === '/set-config') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; u.cdSec = parseInt(url.searchParams.get('cd')) || 30; saveDB(); } res.writeHead(200); return res.end(); }
-    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 30, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Beast Mode Activated!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 30, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Mastermind Ready!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/reset') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.profit = 0; u.count = 0; u.userSlots = []; u.cooldowns = {}; saveDB(); } res.writeHead(302, { 'Location': '/' + url.searchParams.get('id') }); return res.end(); }
@@ -184,7 +185,7 @@ const server = http.createServer(async (req, res) => {
                 document.getElementById('btn-auto').className = d.isAuto ? "px-2 py-2 rounded-lg text-[8px] font-black bg-indigo-600 text-white shadow-[0_0_10px_#6366f1]" : "px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800 text-slate-500";
                 const pBtn = document.getElementById('pauseBtn'); pBtn.innerText = d.isPaused ? "RESUME" : "PAUSE";
                 let h = ''; d.slots.forEach((s, i) => { let m = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.sell - s.buy)) * 100)) : 0;
-                    h += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-indigo-400">Quantum Beast Mode</div><div class="text-right text-green-500 font-bold">Dynamic Target</div></div>\` : ''}</div>\`;
+                    h += \`<div class="p-5 bg-slate-900/50 rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym : 'Slot '+(i+1)+' Scanning...'} \${s.active ? '[DCA:'+s.dca+']' : ''}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP}</div><div class="text-indigo-400">Quantum Hunter Active</div><div class="text-right text-green-500 font-bold">Dynamic Target</div></div>\` : ''}</div>\`;
                 }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 800);</script></body></html>`);
     }
 });
