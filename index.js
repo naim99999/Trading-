@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v85.0 - Storm Runner (Ultra Fast)
+// 🛡️ Quantum AI Master v90.0 - Storm Runner Pro
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -21,8 +21,7 @@ const COINS = [
     { s: "1000PEPEUSDT", d: 7, qd: 0 }, { s: "WIFUSDT", d: 4, qd: 1 }, { s: "DOGEUSDT", d: 5, qd: 0 }, 
     { s: "NEARUSDT", d: 4, qd: 1 }, { s: "AVAXUSDT", d: 3, qd: 1 }, { s: "XRPUSDT", d: 4, qd: 1 }, 
     { s: "SUIUSDT", d: 4, qd: 1 }, { s: "TIAUSDT", d: 4, qd: 1 }, { s: "FETUSDT", d: 4, qd: 1 }, 
-    { s: "APTUSDT", d: 3, qd: 1 }, { s: "LINKUSDT", d: 3, qd: 1 }, { s: "ADAUSDT", d: 4, qd: 1 },
-    { s: "GALAUSDT", d: 5, qd: 0 }, { s: "BONKUSDT", d: 8, qd: 0 }, { s: "SHIBUSDT", d: 8, qd: 0 }
+    { s: "APTUSDT", d: 3, qd: 1 }, { s: "LINKUSDT", d: 3, qd: 1 }, { s: "ADAUSDT", d: 4, qd: 1 }
 ];
 
 let market = {};
@@ -51,7 +50,7 @@ async function getBinanceBalance(c) {
 }
 
 async function placeOrder(sym, side, qty, c) {
-    if (c.mode === 'demo') return { orderId: 'DEMO' };
+    if (c.mode === 'demo') return { orderId: 'DEMO_' + Date.now() };
     const ts = Date.now(); let q = `symbol=${sym}&side=${side}&type=MARKET&quantity=${qty}&timestamp=${ts}`;
     try { return (await axios.post(`https://fapi.binance.com/fapi/v1/order?${q}&signature=${sign(q, c.sec)}`, null, { headers: { 'X-MBX-APIKEY': c.api } })).data; } catch (e) { return null; }
 }
@@ -78,27 +77,32 @@ async function startGlobalEngine() {
                 u.tSpeed = btcT > 0.02 ? "fast" : (btcT < -0.1 ? "safe" : "normal");
             }
 
+            // টিমওয়ার্ক চেক: কয়টি স্লট বর্তমানে ফাঁকা?
+            let idleSlots = u.userSlots.filter(s => !s.active).length;
+
             u.userSlots.forEach(async (sl) => {
                 if (!sl.active || sl.status !== 'TRADING') return;
                 const ms = market[sl.sym]; if(!ms || ms.p === 0) return;
                 sl.curP = ms.p; let rawPnL = ((ms.p - sl.buy) / sl.buy) * 100 * u.lev; sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
-                // Turbo Trailing (০.০১% গ্যাপে প্রফিট তাড়া করা)
                 if (rawPnL >= 0.30) {
-                    let lockP = rawPnL - 0.01; if (ms.trend >= 7) lockP = rawPnL - 0.04;
+                    let lockP = rawPnL - 0.01; if (ms.trend >= 7) lockP = rawPnL - 0.03;
                     if (!sl.be || lockP > sl.slP) { sl.slP = lockP; sl.be = true; }
                 }
 
-                // DCA Logic
+                // --- সাধ্যমতো DCA লজিক (আপনার নতুন শর্ত) ---
                 let dcaT = sl.dca === 0 ? -1.8 : -4.5;
+                // যদি অন্য সব স্লট ফাঁকা থাকে, তবে সামান্য লসেই (-১.০%) সেধে DCA করবে দ্রুত রিকভারির জন্য
+                if (idleSlots === (maxSl - 1) && rawPnL <= -1.0) dcaT = -1.0; 
+
                 if (rawPnL <= dcaT && sl.dca < (u.cap < 10 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.95) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
                         let stM = (parseFloat(sl.qty) * ms.p) / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
                         sl.totalCost += (parseFloat(sl.qty) * ms.p); sl.qty = (parseFloat(sl.qty) * 2).toString();
                         sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.sell = sl.buy * 1.0030; sl.be = false; saveDB();
-                        sendTG(`🌀 <b>DCA: #${sl.sym} (L${sl.dca})</b>\n💰 মার্জিন: $${stM.toFixed(4)}`, u.cid);
+                        sendTG(`🌀 <b>EARLY RESCUE: #${sl.sym}</b>\n💰 মার্জিন: $${stM.toFixed(4)}\n📉 নতুন গড়: $${sl.buy.toFixed(4)}`, u.cid);
                     }
                 }
 
@@ -106,17 +110,15 @@ async function startGlobalEngine() {
                 if ((ms.p >= sl.sell || (sl.be && rawPnL <= sl.slP)) && sl.netBDT >= minP) {
                     sl.status = 'COOLING'; u.profit = Number(u.profit || 0) + (sl.netBDT / 124); u.count++;
                     if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.netBDT / 124) + (sl.totalCost / u.lev);
-                    sendTG(`✅ <b>CLOSED: #${sl.sym}</b>\n✨ নিট লাভ: ৳${sl.netBDT.toFixed(2)}\n📈 মোট: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
+                    sendTG(`✅ <b>CLOSED: #${sl.sym}</b>\n✨ লাভ: ৳${sl.netBDT.toFixed(2)}\n📈 মোট: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
                     if(u.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, u);
-                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 60) * 1000);
+                    u.cooldowns[sl.sym] = Date.now() + (Number(u.cdSec || 30) * 1000); // ডিফল্ট ৩০ সেকেন্ড কুলডাউন
                     setTimeout(() => { Object.assign(sl, { active: false, status: 'IDLE' }); saveDB(); }, 800);
                 }
             });
 
-            // Fast Entry Logic (স্লট ফাঁকা রাখবে না)
             const sIdx = u.userSlots.findIndex(sl => !sl.active);
-            let inDanger = u.userSlots.some(s => s.active && s.dca >= 3);
-            if (!u.isPaused && sIdx !== -1 && !inDanger) {
+            if (!u.isPaused && sIdx !== -1 && !u.userSlots.some(s => s.active && s.dca >= 3)) {
                 let rLim = u.tSpeed === 'fast' ? 65 : (u.tSpeed === 'safe' ? 35 : 48);
                 let dLim = u.tSpeed === 'fast' ? 0.9988 : (u.tSpeed === 'safe' ? 0.9940 : 0.9970);
                 for (let sym of Object.keys(market)) {
@@ -128,7 +130,7 @@ async function startGlobalEngine() {
                                 if(u.mode === 'demo') u.cap = Number(u.cap) - (tV/u.lev);
                                 u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: ms.p, sell: ms.p * 1.0035, slP: 0, qty: qty, pnl: 0, curP: ms.p, dca: 0, totalCost: (parseFloat(qty) * ms.p), be: false, netBDT: -0.10 };
                                 ms.low = 0; saveDB();
-                                sendTG(`🚀 <b>STORM ENTRY: #${sym}</b>\n💰 মার্জিন: $${(tV/u.lev).toFixed(4)}\n⚙️ স্পিড: ${u.tSpeed.toUpperCase()}`, u.cid);
+                                sendTG(`🚀 <b>STORM ENTRY: #${sym}</b>\n💰 মার্জিন: $${(tV/u.lev).toFixed(4)}`, u.cid);
                             }
                             break;
                         }
@@ -147,10 +149,10 @@ const server = http.createServer(async (req, res) => {
         let btc = market["BTCUSDT"] || { btcTrend: 0, p: 0 };
         let pS = btc.btcTrend > 0.04 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL");
         let activeM = u?.userSlots?.reduce((a, s) => a + (s.active ? s.totalCost/u.lev : 0), 0) || 0;
-        return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btc.btcTrend.toFixed(2), btcPrice: btc.p.toFixed(2), isAuto: u?.isAuto || false, guardian: u?.userSlots?.some(s => s.active && s.dca >= 2), cdSec: u?.cdSec || 60 }));
+        return res.end(JSON.stringify({ slots: u?.userSlots || [], profit: u ? (u.profit * 124).toFixed(2) : 0, count: u ? u.count : 0, isPaused: u?.isPaused || false, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), lev: u?.lev || 0, tSpeed: u?.tSpeed || 'normal', pulse: pS, btcVal: btc.btcTrend.toFixed(2), btcPrice: btc.p.toFixed(2), isAuto: u?.isAuto || false, guardian: u?.userSlots?.some(s => s.active && s.dca >= 2), cdSec: u?.cdSec || 30 }));
     }
-    if (url.pathname === '/set-config') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; u.cdSec = parseInt(url.searchParams.get('cd')) || 60; saveDB(); } res.writeHead(200); return res.end(); }
-    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 60, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Storm Runner Ready!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
+    if (url.pathname === '/set-config') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.tSpeed = url.searchParams.get('speed') || u.tSpeed; u.isAuto = url.searchParams.get('auto') === 'true'; u.cdSec = parseInt(url.searchParams.get('cd')) || 30; saveDB(); } res.writeHead(200); return res.end(); }
+    if (url.pathname === '/register') { let id = url.searchParams.get('id'), cid = url.searchParams.get('cid'); cachedUsers[id] = { api: url.searchParams.get('api'), sec: url.searchParams.get('sec'), cid: cid, cap: parseFloat(url.searchParams.get('cap'))||10, lev: parseInt(url.searchParams.get('lev'))||20, slots: parseInt(url.searchParams.get('slots'))||5, mode: url.searchParams.get('mode')||'live', fMode: url.searchParams.get('fmode')||'usdt', tSpeed: 'normal', profit: 0, count: 0, isPaused: false, isAuto: true, cdSec: 30, userSlots: [], cooldowns: {} }; saveDB(); sendTG("🚀 <b>Storm Pro Ready!</b>", cid); res.writeHead(302, { 'Location': '/' + id }); return res.end(); }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end(); }
     if (url.pathname === '/reset') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.profit = 0; u.count = 0; u.userSlots = []; u.cooldowns = {}; saveDB(); } res.writeHead(302, { 'Location': '/' + url.searchParams.get('id') }); return res.end(); }
@@ -162,7 +164,7 @@ const server = http.createServer(async (req, res) => {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-width-xl mx-auto space-y-4">
         <div class="p-4 bg-slate-900 rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold" id="gMsg">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="flex gap-1"><button onclick="setConfig('fast', false)" id="btn-fast" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚡</button><button onclick="setConfig('normal', false)" id="btn-normal" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">⚖️</button><button onclick="setConfig('safe', false)" id="btn-safe" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">🛡️</button><button onclick="setConfig('', true)" id="btn-auto" class="px-2 py-2 rounded-lg text-[8px] font-black border border-slate-800">🤖 AUTO</button></div></div></div>
         <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 uppercase tracking-widest italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p><div class="mt-2 text-[10px] text-slate-500 font-bold flex justify-between px-10"><span>Lev: <span id="levText">0</span>x</span> <span>CD: <input type="number" id="cdIn" class="bg-transparent border-b border-sky-500 w-10 text-center outline-none" onchange="updateCD()">s</span></div></div><div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 uppercase tracking-widest font-black">Wins</p><p class="text-4xl font-black text-sky-400" id="countText">0</p></div></div><div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset?id=${userId}" class="bg-red-900/20 border border-red-500/30 text-red-500 py-5 rounded-full text-center text-[10px] font-black">Reset</a></div><a href="/reset-logout?id=${userId}" onclick="return confirm('লগ আউট করবেন?')" class="block w-full bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout & Reset System</a></div><script>
-            let curCD = 60; let curS = 'normal'; let curA = true;
+            let curCD = 30; let curS = 'normal'; let curA = true;
             async function setConfig(s, a) { curS = s || curS; curA = a; await fetch(\`/set-config?id=${userId}&speed=\${curS}&auto=\${curA}&cd=\${curCD}\`); updateData(); }
             async function updateCD() { curCD = document.getElementById('cdIn').value; await setConfig(curS, curA); }
             async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }
