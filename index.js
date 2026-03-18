@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v1000.3 - THE FINAL PRECISION
+// 🛡️ Quantum AI Master v1000.4 - THE GRACEFUL EXIT
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -69,27 +69,32 @@ async function startGlobalEngine() {
     setInterval(async () => {
         for (let uid in cachedUsers) {
             let u = cachedUsers[uid]; 
-            if (u.status === 'COMPLETED') continue;
+            let activeTrades = u.userSlots.filter(s => s.active).length;
+
+            // যদি টার্গেট পূরণ হয় এবং কোনো ট্রেড বাকি না থাকে, তবেই লুপ স্কিপ করবে।
+            if (u.status === 'COMPLETED' && activeTrades === 0) continue;
 
             let feeR = u.fMode === 'bnb' ? 0.00045 : 0.0005;
-            let activeTrades = u.userSlots.filter(s => s.active).length;
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
 
-            // --- 🤖 AUTO CONTROL LOGIC ---
+            // --- 🤖 AUTO CONTROL & TARGET CHECK ---
             let totalProfitBDT = (Number(u.profit || 0) * 124);
-            if (totalProfitBDT >= Number(u.targetBDT)) {
-                u.isPaused = true; u.status = 'COMPLETED';
-                sendTG(`🎯 <b>TARGET REACHED!</b>\nProfit: ৳${totalProfitBDT.toFixed(2)}`, u.cid);
-                saveDB(); continue;
+            if (totalProfitBDT >= Number(u.targetBDT) && u.status !== 'COMPLETED') {
+                u.isPaused = true; 
+                u.status = 'COMPLETED'; 
+                sendTG(`🎯 <b>TARGET REACHED!</b>\nProfit: ৳${totalProfitBDT.toFixed(2)}\n<i>Finishing active trades...</i>`, u.cid);
+                saveDB();
             }
 
+            // মার্কেট ক্র্যাশ প্রোটেকশন
             let highRiskTrade = u.userSlots.some(s => s.active && s.pnl < -3.5);
             if (btcT < -0.15 || highRiskTrade) {
                 if(!u.isPaused) { u.isPaused = true; u.sysPaused = true; }
-            } else if (u.sysPaused && btcT > -0.05 && !highRiskTrade) {
+            } else if (u.sysPaused && btcT > -0.05 && !highRiskTrade && u.status !== 'COMPLETED') {
                 u.isPaused = false; u.sysPaused = false; 
             }
 
+            // --- ট্রেড ম্যানেজমেন্ট (সেল এবং DCA) ---
             u.userSlots.forEach(async (sl) => {
                 if (!sl.active || sl.isClosing) return;
                 const ms = market[sl.sym]; if(!ms || ms.p === 0) return;
@@ -100,25 +105,25 @@ async function startGlobalEngine() {
 
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
                 
+                // যদি বট পুস করা থাকে বা টার্গেট ফিল হয়ে যায়, তবে খুব অল্প লাভেই সেল দিবে যাতে তাড়াতাড়ি বের হওয়া যায়।
                 let minP = u.isPaused ? 0.20 : (Number(u.cap) < 15 ? 0.60 : 1.20);
                 let dropTrigger = sl.maxNetBDT - 0.01;
 
-                // --- 📉 PROFIT CLOSING LOGIC ---
+                // সেল লজিক
                 if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropTrigger))) {
                     sl.isClosing = true; 
                     let res = await placeOrder(sl.sym, "SELL", sl.qty, u);
                     if (res) {
                         let gain = sl.netBDT / 124;
                         u.profit = Number(u.profit || 0) + gain;
-                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
+                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal: ৳${(u.profit * 124).toFixed(2)}`, u.cid);
                         if(u.mode === 'demo') u.cap = Number(u.cap) + gain + (sl.totalCost / u.lev);
-                        // Reset slot immediately
                         Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0 }); 
                         saveDB();
-                    } else { sl.isClosing = false; } // Retry next cycle if failed
+                    } else { sl.isClosing = false; }
                 }
 
-                // --- 🌀 DCA LOGIC ---
+                // DCA লজিক (শুধুমাত্র যদি টার্গেট পূর্ণ না হয় অথবা মার্কেট অনেক খারাপ হয়)
                 let dcaT = sl.dca === 0 ? -1.8 : -4.5;
                 if (rawPnL <= dcaT && sl.dca < (u.cap < 15 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.92) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
@@ -131,8 +136,8 @@ async function startGlobalEngine() {
                 }
             });
 
-            // --- 🚀 SNIPER ENTRY LOGIC ---
-            if (!u.isPaused && activeTrades < u.slots) {
+            // --- 🚀 নতুন এন্ট্রি (শুধুমাত্র যদি বট পুস না থাকে এবং টার্গেট বাকি থাকে) ---
+            if (!u.isPaused && activeTrades < u.slots && u.status !== 'COMPLETED') {
                 let rLim = btcT > 0.05 ? 65 : 45;
                 let dLim = btcT > 0.05 ? 0.9992 : 0.9975;
                 for (let sym of Object.keys(market)) {
@@ -140,7 +145,6 @@ async function startGlobalEngine() {
                     const m = market[sym]; if (m.p === 0 || m.history.length < 20) continue;
                     if (m.rsi < rLim && m.p < (Math.max(...m.history) * dLim) && m.p > (m.low * 1.0005)) {
                         if (!u.userSlots.some(x => x.active && x.sym === sym)) {
-                            // DIVIDER 10 FOR SAFETY
                             let tV = Math.max(5.1, (u.cap * u.lev) / u.slots / 10), qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
                             const sIdx = u.userSlots.findIndex(sl => !sl.active);
                             if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
@@ -165,7 +169,7 @@ const server = http.createServer(async (req, res) => {
         let activeM = u?.userSlots?.reduce((a, s) => a + (s.active ? s.totalCost/u.lev : 0), 0) || 0;
         return res.end(JSON.stringify({ ...u, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), btcPrice: btc.p.toFixed(2), btcTrend: btc.btcTrend.toFixed(2), pulse: btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL") }));
     }
-    if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; u.sysPaused = false; saveDB(); } res.writeHead(200); return res.end("OK"); }
+    if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; u.status = 'ACTIVE'; u.sysPaused = false; saveDB(); } res.writeHead(200); return res.end("OK"); }
     if (url.pathname === '/register') { 
         let q = url.searchParams; let id = q.get('id'), cap = Number(q.get('cap')), target = Number(q.get('target')), lev = Number(q.get('lev')), slots = Number(q.get('slots'));
         cachedUsers[id] = { api: q.get('api'), sec: q.get('sec'), cid: q.get('cid'), cap: cap, lev: lev, slots: slots, targetBDT: target, mode: q.get('mode'), fMode: q.get('fmode'), profit: 0, count: 0, isPaused: false, sysPaused: false, status: 'ACTIVE', userSlots: Array(slots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, netBDT: 0, maxNetBDT: 0 })) };
@@ -186,8 +190,8 @@ const server = http.createServer(async (req, res) => {
             async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const d = await res.json(); 
                 document.getElementById('balanceText').innerText = d.balance || "0.00"; document.getElementById('profitText').innerText = (Number(d.profit || 0) * 124).toFixed(2);
                 document.getElementById('targetText').innerText = d.targetBDT || "0"; 
-                document.getElementById('pauseBtn').innerText = d.isPaused ? (d.status==='COMPLETED' ? "DONE" : "RESUME") : "PAUSE";
-                if(d.sysPaused) { document.getElementById('pauseBtn').innerText = "AUTO-PAUSED"; }
+                document.getElementById('pauseBtn').innerText = d.isPaused ? (d.status==='COMPLETED' ? "EXITING..." : "RESUME") : "PAUSE";
+                if(d.sysPaused && d.status !== 'COMPLETED') { document.getElementById('pauseBtn').innerText = "AUTO-PAUSED"; }
                 const pM = document.getElementById('pM'); const pB = document.getElementById('pB'); const pP = document.getElementById('pP');
                 pP.innerText = "BTC: $" + (d.btcPrice || "0.00");
                 if(d.pulse === "BULLISH") { pM.innerText = "📈 Bullish ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-green-400"; pB.className="absolute top-0 left-0 h-1 bg-green-500 w-full shadow-[0_0_10px_#22c55e]"; }
