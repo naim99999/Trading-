@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ Quantum AI Master v1000.2 - AUTO-PULSE & RISK GUARD
+// 🛡️ Quantum AI Master v1000.3 - THE FINAL PRECISION
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -75,23 +75,19 @@ async function startGlobalEngine() {
             let activeTrades = u.userSlots.filter(s => s.active).length;
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
 
-            // --- 🤖 SMART AUTO-CONTROL LOGIC ---
+            // --- 🤖 AUTO CONTROL LOGIC ---
             let totalProfitBDT = (Number(u.profit || 0) * 124);
-            
-            // ১. টার্গেট পূর্ণ হলে অটো স্টপ
             if (totalProfitBDT >= Number(u.targetBDT)) {
                 u.isPaused = true; u.status = 'COMPLETED';
-                sendTG(`🎯 <b>TARGET REACHED!</b>\nProfit: ৳${totalProfitBDT.toFixed(2)}\nBot taking rest now.`, u.cid);
+                sendTG(`🎯 <b>TARGET REACHED!</b>\nProfit: ৳${totalProfitBDT.toFixed(2)}`, u.cid);
                 saveDB(); continue;
             }
 
-            // ২. মার্কেট ক্র্যাশ প্রোটেকশন (BTC দ্রুত নামলে নতুন ট্রেড অফ)
-            // ৩. বড় মাইনাস ঝুঁকি প্রোটেকশন (কোনো স্লট ৩% এর বেশি লসে থাকলে নতুন ট্রেড অফ)
-            let highRiskTrade = u.userSlots.some(s => s.active && s.pnl < -3);
-            if (btcT < -0.12 || highRiskTrade) {
+            let highRiskTrade = u.userSlots.some(s => s.active && s.pnl < -3.5);
+            if (btcT < -0.15 || highRiskTrade) {
                 if(!u.isPaused) { u.isPaused = true; u.sysPaused = true; }
             } else if (u.sysPaused && btcT > -0.05 && !highRiskTrade) {
-                u.isPaused = false; u.sysPaused = false; // অটো রিজুম
+                u.isPaused = false; u.sysPaused = false; 
             }
 
             u.userSlots.forEach(async (sl) => {
@@ -102,25 +98,29 @@ async function startGlobalEngine() {
                 sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
-                // ১ পয়সা ট্রেইলিং লজিক
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
                 
                 let minP = u.isPaused ? 0.20 : (Number(u.cap) < 15 ? 0.60 : 1.20);
                 let dropTrigger = sl.maxNetBDT - 0.01;
 
-                // সেল লজিক: হাই প্রফিট অথবা পুস মোডে দ্রুত বের হওয়া
+                // --- 📉 PROFIT CLOSING LOGIC ---
                 if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropTrigger))) {
-                    sl.isClosing = true; let gain = sl.netBDT / 124;
-                    u.profit = Number(u.profit || 0) + gain; u.count++;
-                    if(u.mode === 'demo') u.cap = Number(u.cap) + gain + (sl.totalCost / u.lev);
-                    sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
-                    if(u.mode !== 'demo') await placeOrder(sl.sym, "SELL", sl.qty, u);
-                    setTimeout(() => { Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0 }); saveDB(); }, 1200);
+                    sl.isClosing = true; 
+                    let res = await placeOrder(sl.sym, "SELL", sl.qty, u);
+                    if (res) {
+                        let gain = sl.netBDT / 124;
+                        u.profit = Number(u.profit || 0) + gain;
+                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal: ৳${(u.profit * 124).toFixed(0)}`, u.cid);
+                        if(u.mode === 'demo') u.cap = Number(u.cap) + gain + (sl.totalCost / u.lev);
+                        // Reset slot immediately
+                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0 }); 
+                        saveDB();
+                    } else { sl.isClosing = false; } // Retry next cycle if failed
                 }
 
-                // মাইনাস কমানোর জন্য টিমওয়ার্ক DCA
-                let dcaT = sl.dca === 0 ? -1.6 : -4.0;
-                if (rawPnL <= dcaT && sl.dca < (u.cap < 15 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.95) {
+                // --- 🌀 DCA LOGIC ---
+                let dcaT = sl.dca === 0 ? -1.8 : -4.5;
+                if (rawPnL <= dcaT && sl.dca < (u.cap < 15 ? 2 : 4) && (sl.totalCost/u.lev)*2 < u.cap*0.92) {
                     if (await placeOrder(sl.sym, "BUY", sl.qty, u)) {
                         let stM = (parseFloat(sl.qty) * ms.p) / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - stM;
@@ -131,16 +131,17 @@ async function startGlobalEngine() {
                 }
             });
 
-            // হান্টিং লজিক (শুধুমাত্র যখন বট পুস থাকবে না)
+            // --- 🚀 SNIPER ENTRY LOGIC ---
             if (!u.isPaused && activeTrades < u.slots) {
                 let rLim = btcT > 0.05 ? 65 : 45;
-                let dLim = btcT > 0.05 ? 0.9990 : 0.9975;
+                let dLim = btcT > 0.05 ? 0.9992 : 0.9975;
                 for (let sym of Object.keys(market)) {
                     if (activeTrades >= u.slots) break;
                     const m = market[sym]; if (m.p === 0 || m.history.length < 20) continue;
                     if (m.rsi < rLim && m.p < (Math.max(...m.history) * dLim) && m.p > (m.low * 1.0005)) {
                         if (!u.userSlots.some(x => x.active && x.sym === sym)) {
-                            let tV = Math.max(5.1, (u.cap * u.lev) / u.slots / 1.5), qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
+                            // DIVIDER 10 FOR SAFETY
+                            let tV = Math.max(5.1, (u.cap * u.lev) / u.slots / 10), qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd), mE = tV / u.lev;
                             const sIdx = u.userSlots.findIndex(sl => !sl.active);
                             if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
                                 if(u.mode === 'demo') u.cap = Number(u.cap) - mE;
@@ -193,7 +194,7 @@ const server = http.createServer(async (req, res) => {
                 else if(d.pulse === "BEARISH") { pM.innerText = "⚠️ Bearish ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-red-500"; pB.className="absolute top-0 left-0 h-1 bg-red-500 w-full shadow-[0_0_10px_#ef4444]"; }
                 else { pM.innerText = "⚖️ Stable ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-sky-400"; pB.className="absolute top-0 left-0 h-1 bg-sky-500 w-full shadow-[0_0_10px_#0ea5e9]"; }
                 let h = ''; d.userSlots.forEach((s, i) => { let m = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.buy * 0.005)) * 100)) : 0;
-                    h += \`<div class="p-5 bg-slate-900/40 backdrop-blur-sm rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym + ' [DCA:'+s.dca+']' : 'Slot '+(i+1)+' Idle'}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(4)}</div><div class="text-right">Live: \${s.curP.toFixed(4)}</div><div class="text-indigo-400 italic text-center col-span-2 mt-1">Apex Shield Active</div></div>\` : ''}</div>\`;
+                    h += \`<div class="p-5 bg-slate-900/40 backdrop-blur-sm rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym + ' [DCA:'+s.dca+']' : 'Slot '+(i+1)+' Idle'}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(8)}</div><div class="text-right">Live: \${s.curP.toFixed(8)}</div><div class="text-indigo-400 italic text-center col-span-2 mt-1">Apex Shield Active</div></div>\` : ''}</div>\`;
                 }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 800);</script></body></html>`);
     }
 });
