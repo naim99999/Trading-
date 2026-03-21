@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 QUANTUM AI MASTER - THE FINAL SOLUTION
+// 👑 QUANTUM AI MASTER - REGAL FINAL v4.0
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -94,6 +94,7 @@ async function startGlobalEngine() {
                 sl.curP = ms.p;
                 let rawPnL = ((ms.p - sl.buy) / sl.buy) * 100 * u.lev;
                 sl.pnl = rawPnL - (feeR * 200);
+                // নিট প্রফিট (ফী বাদ দিয়ে):
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
@@ -111,9 +112,9 @@ async function startGlobalEngine() {
                     } else sl.isClosing = false;
                 }
 
-                // 💰 প্রফিট বুকিং
-                let minP = u.isPaused ? 30 : 150; 
-                let dropT = sl.maxNetBDT - 0.01;
+                // 💰 প্রফিট বুকিং লজিক (নিট লাভ ১ টাকা হলেই শুরু হবে)
+                let minP = 1.0; // নিট ১ টাকা লাভ 
+                let dropT = sl.maxNetBDT - 0.01; // ট্রেইলিং লজিক
                 if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropT))) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
