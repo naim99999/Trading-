@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 QUANTUM AI MASTER - REGAL FINAL v3.5
+// 👑 QUANTUM AI MASTER - THE FINAL SOLUTION
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -95,30 +95,34 @@ async function startGlobalEngine() {
                 let rawPnL = ((ms.p - sl.buy) / sl.buy) * 100 * u.lev;
                 sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
-                sl.marginCost = (sl.totalCost / u.lev); 
 
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
 
-                // 🚨 EMERGENCY STOP LOSS (-12.5%)
+                // 🚨 এমারজেন্সি স্টপ লস (-12.5%)
                 if (sl.pnl <= -12.5) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
-                        u.profit = Number(u.profit || 0) + (sl.netBDT / 124);
+                        let gainUSD = (sl.netBDT / 124);
+                        u.profit = Number(u.profit || 0) + gainUSD;
+                        if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
                         sendTG(`🚨 <b>EMERGENCY SL: #${sl.sym}</b>\nLoss: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
-                        return;
+                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); 
+                        saveDB(); return;
                     } else sl.isClosing = false;
                 }
 
-                // 💰 প্রফিট বুকিং (Trailing Logic)
+                // 💰 প্রফিট বুকিং
                 let minP = u.isPaused ? 30 : 150; 
                 let dropT = sl.maxNetBDT - 0.01;
                 if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropT))) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
-                        u.profit = Number(u.profit || 0) + (sl.netBDT / 124);
+                        let gainUSD = (sl.netBDT / 124);
+                        u.profit = Number(u.profit || 0) + gainUSD;
+                        if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
                         sendTG(`✅ <b>PROFIT BOOKED: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
+                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); 
+                        saveDB();
                     } else sl.isClosing = false;
                 }
 
@@ -127,10 +131,12 @@ async function startGlobalEngine() {
                 if (rawPnL <= dcaT && sl.dca < 3 && (sl.totalCost/u.lev)*1.8 < u.cap*0.9) {
                     let dQty = (parseFloat(sl.qty) * 1.1).toFixed(COINS.find(c => c.s === sl.sym).qd);
                     if (await placeOrder(sl.sym, "BUY", dQty, u)) {
+                        let addedMargin = (parseFloat(dQty) * ms.p) / u.lev;
+                        if(u.mode === 'demo') u.cap = Number(u.cap) - addedMargin;
                         sl.totalCost += (parseFloat(dQty) * ms.p); 
                         sl.qty = (parseFloat(sl.qty) + parseFloat(dQty)).toString();
-                        sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.maxNetBDT = 0; saveDB();
-                        sendTG(`🌀 <b>DCA ACTIVE: #${sl.sym} (L${sl.dca})</b>`, u.cid);
+                        sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.marginCost = (sl.totalCost / u.lev);
+                        saveDB(); sendTG(`🌀 <b>DCA ACTIVE: #${sl.sym} (L${sl.dca})</b>`, u.cid);
                     }
                 }
             });
@@ -142,10 +148,14 @@ async function startGlobalEngine() {
                     const m = market[sym]; if (m.p === 0 || m.history.length < 30) continue;
                     if (m.rsi < 35 && m.p > m.lp && !u.userSlots.some(x => x.active && x.sym === sym)) {
                         let tV = (u.cap * u.lev) / u.slots / 2.5; 
+                        let marginNeeded = tV / u.lev;
+                        if (u.mode === 'demo' && u.cap < marginNeeded) continue;
+
                         let qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd);
                         const sIdx = u.userSlots.findIndex(sl => !sl.active);
                         if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
-                            u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: -0.5, maxNetBDT: 0, isClosing: false, marginCost: (tV/u.lev) };
+                            if(u.mode === 'demo') u.cap = Number(u.cap) - marginNeeded;
+                            u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: -0.5, maxNetBDT: 0, isClosing: false, marginCost: marginNeeded };
                             activeTrades++; saveDB(); sendTG(`🚀 <b>REGAL ENTRY: #${sym}</b>`, u.cid);
                         }
                     }
@@ -161,8 +171,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/data') {
         const u = cachedUsers[url.searchParams.get('id')]; const rawB = await getBinanceBalance(u || {});
         let btc = market["BTCUSDT"] || { btcTrend: 0, p: 0 };
-        let activeM = u?.userSlots?.reduce((a, s) => a + (s.active ? s.totalCost/u.lev : 0), 0) || 0;
-        return res.end(JSON.stringify({ ...u, balance: (Number(rawB) - (u?.mode === 'demo' ? 0 : activeM)).toFixed(2), btcPrice: btc.p.toFixed(2), btcTrend: btc.btcTrend.toFixed(2), pulse: btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL") }));
+        return res.end(JSON.stringify({ ...u, balance: Number(rawB).toFixed(2), btcPrice: btc.p.toFixed(2), btcTrend: btc.btcTrend.toFixed(2), pulse: btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "NEUTRAL") }));
     }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; u.sysPaused = false; saveDB(); } res.writeHead(200); return res.end("OK"); }
     if (url.pathname === '/register') { 
@@ -174,11 +183,11 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !cachedUsers[userId]) {
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="slots" type="number" placeholder="Slots" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"></div><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Initialize Hub</button></form></div></body></html>`);
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="slots" type="number" placeholder="Slots" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"></div><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Start Engine</button></form></div></body></html>`);
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-width-xl mx-auto space-y-4">
         <div class="p-4 bg-slate-900/50 backdrop-blur-md rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="px-3 py-2 bg-indigo-600/20 border border-indigo-500/50 rounded-lg text-[8px] font-black text-indigo-400">🛡️ APEX GUARD</div></div></div>
-        <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 italic">Net Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p></div>
+        <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 italic">Simulation Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p></div>
         <div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 italic">Target BDT</p><p class="text-4xl font-black text-sky-400">৳<span id="targetText">0</span></p></div></div>
         <div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset-logout?id=${userId}" class="block bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout</a></div></div><script>
             async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }
