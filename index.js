@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 🛡️ QUANTUM AI - REGAL MASTER v3.0 (FIXED)
+// 👑 QUANTUM AI MASTER - REGAL FINAL v3.5
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -73,7 +73,7 @@ async function startGlobalEngine() {
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
             let feeR = u.fMode === 'bnb' ? 0.00045 : 0.0005;
 
-            // --- 🤖 AUTO PAUSE & PROTECTION ---
+            // --- প্রফিট ও পুস ম্যানেজমেন্ট ---
             let totalProfitBDT = (Number(u.profit || 0) * 124);
             if (totalProfitBDT >= Number(u.targetBDT) && u.status !== 'COMPLETED') {
                 u.isPaused = true; u.status = 'COMPLETED'; saveDB();
@@ -95,6 +95,7 @@ async function startGlobalEngine() {
                 let rawPnL = ((ms.p - sl.buy) / sl.buy) * 100 * u.lev;
                 sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
+                sl.marginCost = (sl.totalCost / u.lev); 
 
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
 
@@ -102,22 +103,22 @@ async function startGlobalEngine() {
                 if (sl.pnl <= -12.5) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
-                        u.profit += (sl.netBDT / 124);
+                        u.profit = Number(u.profit || 0) + (sl.netBDT / 124);
                         sendTG(`🚨 <b>EMERGENCY SL: #${sl.sym}</b>\nLoss: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0 }); saveDB();
+                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
                         return;
                     } else sl.isClosing = false;
                 }
 
-                // 💰 PROFIT BOOKING (Pause হলেও কাজ করবে)
+                // 💰 প্রফিট বুকিং (Trailing Logic)
                 let minP = u.isPaused ? 30 : 150; 
                 let dropT = sl.maxNetBDT - 0.01;
                 if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropT))) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
-                        u.profit += (sl.netBDT / 124);
-                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0 }); saveDB();
+                        u.profit = Number(u.profit || 0) + (sl.netBDT / 124);
+                        sendTG(`✅ <b>PROFIT BOOKED: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}`, u.cid);
+                        Object.assign(sl, { active: false, status: 'IDLE', sym: '', isClosing: false, maxNetBDT: 0, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
                     } else sl.isClosing = false;
                 }
 
@@ -129,12 +130,12 @@ async function startGlobalEngine() {
                         sl.totalCost += (parseFloat(dQty) * ms.p); 
                         sl.qty = (parseFloat(sl.qty) + parseFloat(dQty)).toString();
                         sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.maxNetBDT = 0; saveDB();
-                        sendTG(`🌀 <b>DCA: #${sl.sym} (L${sl.dca})</b>`, u.cid);
+                        sendTG(`🌀 <b>DCA ACTIVE: #${sl.sym} (L${sl.dca})</b>`, u.cid);
                     }
                 }
             });
 
-            // 🚀 SNIPER ENTRY
+            // 🚀 এন্ট্রি লজিক
             if (!u.isPaused && activeTrades < u.slots && u.status !== 'COMPLETED') {
                 for (let sym of Object.keys(market)) {
                     if (activeTrades >= u.slots) break;
@@ -144,7 +145,7 @@ async function startGlobalEngine() {
                         let qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd);
                         const sIdx = u.userSlots.findIndex(sl => !sl.active);
                         if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
-                            u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: -0.5, maxNetBDT: 0, isClosing: false };
+                            u.userSlots[sIdx] = { id: sIdx, active: true, status: 'TRADING', sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: -0.5, maxNetBDT: 0, isClosing: false, marginCost: (tV/u.lev) };
                             activeTrades++; saveDB(); sendTG(`🚀 <b>REGAL ENTRY: #${sym}</b>`, u.cid);
                         }
                     }
@@ -166,14 +167,14 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; u.sysPaused = false; saveDB(); } res.writeHead(200); return res.end("OK"); }
     if (url.pathname === '/register') { 
         let q = url.searchParams; let id = q.get('id'), cap = Number(q.get('cap')), target = Number(q.get('target')), lev = Number(q.get('lev')), slots = Number(q.get('slots'));
-        cachedUsers[id] = { api: q.get('api'), sec: q.get('sec'), cid: q.get('cid'), cap: cap, lev: lev, slots: slots, targetBDT: target, mode: q.get('mode'), fMode: q.get('fmode'), profit: 0, isPaused: false, sysPaused: false, status: 'ACTIVE', userSlots: Array(slots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, netBDT: 0, maxNetBDT: 0 })) };
+        cachedUsers[id] = { api: q.get('api'), sec: q.get('sec'), cid: q.get('cid'), cap: cap, lev: lev, slots: slots, targetBDT: target, mode: q.get('mode'), fMode: q.get('fmode'), profit: 0, isPaused: false, sysPaused: false, status: 'ACTIVE', userSlots: Array(slots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, netBDT: 0, maxNetBDT: 0, marginCost: 0 })) };
         saveDB(); res.writeHead(302, { 'Location': '/' + id }); return res.end(); 
     }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !cachedUsers[userId]) {
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input id="capI" name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="lev" id="levI" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="slots" id="slotI" type="number" placeholder="Slots" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"></div><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Initialize Regal</button></form></div></body></html>`);
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><input name="slots" type="number" placeholder="Slots" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"></div><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Initialize Hub</button></form></div></body></html>`);
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-width-xl mx-auto space-y-4">
         <div class="p-4 bg-slate-900/50 backdrop-blur-md rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold">BTC Market Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="px-3 py-2 bg-indigo-600/20 border border-indigo-500/50 rounded-lg text-[8px] font-black text-indigo-400">🛡️ APEX GUARD</div></div></div>
@@ -182,7 +183,8 @@ const server = http.createServer(async (req, res) => {
         <div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset-logout?id=${userId}" class="block bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout</a></div></div><script>
             async function togglePause() { await fetch('/toggle-pause?id=${userId}'); location.reload(); }
             async function updateData() { try { const res = await fetch('/api/data?id=${userId}'); const d = await res.json(); 
-                document.getElementById('balanceText').innerText = d.balance || "0.00"; document.getElementById('profitText').innerText = (Number(d.profit || 0) * 124).toFixed(2);
+                document.getElementById('balanceText').innerText = d.balance || "0.00"; 
+                document.getElementById('profitText').innerText = (Number(d.profit || 0) * 124).toFixed(2);
                 document.getElementById('targetText').innerText = d.targetBDT || "0"; 
                 document.getElementById('pauseBtn').innerText = d.isPaused ? (d.sysPaused ? "AUTO-PAUSED" : "RESUME") : "PAUSE";
                 const pM = document.getElementById('pM'); const pB = document.getElementById('pB'); const pP = document.getElementById('pP');
@@ -191,7 +193,7 @@ const server = http.createServer(async (req, res) => {
                 else if(d.pulse === "BEARISH") { pM.innerText = "⚠️ Bearish ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-red-500"; pB.className="absolute top-0 left-0 h-1 bg-red-500 w-full"; }
                 else { pM.innerText = "⚖️ Stable ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-sky-400"; pB.className="absolute top-0 left-0 h-1 bg-sky-500 w-full"; }
                 let h = ''; d.userSlots.forEach((s, i) => { let m = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.buy * 0.005)) * 100)) : 0;
-                    h += \`<div class="p-5 bg-slate-900/40 backdrop-blur-sm rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym + ' [DCA:'+s.dca+']' : 'Slot '+(i+1)+' Idle'}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(6)}</div><div class="text-right text-indigo-400">Cost: $\${(s.totalCost/d.lev).toFixed(2)}</div><div>Live: \${s.curP.toFixed(6)}</div><div class="text-right italic">Apex Active</div></div>\` : ''}</div>\`;
+                    h += \`<div class="p-5 bg-slate-900/40 backdrop-blur-sm rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym + ' [DCA:'+s.dca+']' : 'Slot '+(i+1)+' Idle'}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(6)}</div><div class="text-right text-indigo-400 font-bold">Cut: $\${(s.marginCost || 0).toFixed(2)}</div><div>Live: \${s.curP.toFixed(6)}</div><div class="text-right italic">Apex Shield Active</div></div>\` : ''}</div>\`;
                 }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 900);</script></body></html>`);
     }
 });
