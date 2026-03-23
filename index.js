@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 ULTIMATE REGAL MASTER v5.0 - THE SMART HUB
+// 👑 ULTIMATE REGAL MASTER v5.1 - GALA SPECIALIZED
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -26,7 +26,6 @@ const COINS = [
 let market = {};
 COINS.forEach(c => market[c.s] = { p: 0, lp: 0, history: [], ema7: 0, ema25: 0, rsi: 50, btcTrend: 0 });
 
-// --- 🧠 অ্যাডভান্সড ইন্ডিকেটর ক্যালকুলেটর ---
 function calculateEMA(prices, period) {
     if (prices.length < period) return prices[prices.length - 1];
     let k = 2 / (period + 1);
@@ -84,7 +83,7 @@ async function startGlobalEngine() {
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
             let feeR = u.fMode === 'bnb' ? 0.0004 : 0.0005;
 
-            // --- 🛡️ সুরক্ষা লেভেল ---
+            // --- প্রফিট ও পুস ম্যানেজমেন্ট ---
             let growthBDT = (Number(u.profit || 0) * 124);
             if (growthBDT >= Number(u.targetBDT) && u.status !== 'COMPLETED') {
                 u.isPaused = true; u.status = 'COMPLETED'; saveDB();
@@ -105,34 +104,40 @@ async function startGlobalEngine() {
 
                 if (sl.netBDT > (sl.maxNetBDT || 0)) sl.maxNetBDT = sl.netBDT;
 
-                // 1. 🚨 এমারজেন্সি স্টপ লস (-12%)
-                if (sl.pnl <= -12.0) {
+                // 🚨 এমারজেন্সি স্টপ লস (-12.5%)
+                if (sl.pnl <= -12.5) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
                         let gainUSD = (sl.netBDT / 124);
                         u.profit = Number(u.profit || 0) + gainUSD;
                         if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
                         sendTG(`🚨 <b>EMERGENCY SL: #${sl.sym}</b>\nLoss: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0 }); saveDB();
+                        Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
                         return;
                     } else sl.isClosing = false;
                 }
 
-                // 2. 💰 প্রফিট বুকিং (নিট ১ টাকা লাভ + স্মার্ট ট্রেইলিং)
+                // 💰 প্রফিট বুকিং লজিক
                 let minP = 1.0; 
                 let dropT = sl.maxNetBDT - 0.01;
-                if (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropT))) {
+                
+                // ⭐ GALA-র জন্য স্পেশাল লজিক: ১ টাকা লাভ হলেই সাথে সাথে সেল।
+                let isGalaExit = (sl.sym === "GALAUSDT" && sl.netBDT >= 1.0);
+                // অন্যান্য কয়েন ও পজ অবস্থার জন্য নরমাল লজিক
+                let isStandardExit = (sl.netBDT >= minP && (u.isPaused || (sl.maxNetBDT > 0 && sl.netBDT <= dropT)));
+
+                if (isGalaExit || isStandardExit) {
                     sl.isClosing = true;
                     if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
                         let gainUSD = (sl.netBDT / 124);
                         u.profit = Number(u.profit || 0) + gainUSD;
                         if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
                         sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}`, u.cid);
-                        Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0 }); saveDB();
+                        Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
                     } else sl.isClosing = false;
                 }
 
-                // 3. 🌀 স্মার্ট ডিসিএ (গ্যাপ ৪% এবং সর্বোচ্চ ২ বার)
+                // 🌀 ডিসিএ লজিক
                 if (sl.pnl <= -4.5 && sl.dca < 2 && (sl.totalCost/u.lev)*1.8 < u.cap*0.85) {
                     let dQty = (parseFloat(sl.qty) * 1.0).toFixed(COINS.find(c => c.s === sl.sym).qd);
                     if (await placeOrder(sl.sym, "BUY", dQty, u)) {
@@ -146,15 +151,14 @@ async function startGlobalEngine() {
                 }
             });
 
-            // 4. 🚀 এন্ট্রি লজিক (EMA 7/25 + RSI কনফার্মেশন)
+            // 🚀 এন্ট্রি লজিক
             if (!u.isPaused && activeTrades < u.slots && u.status !== 'COMPLETED') {
                 for (let sym of Object.keys(market)) {
                     if (activeTrades >= u.slots) break;
                     const m = market[sym]; if (m.p === 0 || m.history.length < 40) continue;
                     
-                    // ট্রেন্ড কনফার্মেশন: RSI < 32 (ওভারসোল্ড) এবং EMA7 > EMA25 (বুলিশ ক্রসওভার শুরু)
                     if (m.rsi < 32 && m.ema7 > m.ema25 && !u.userSlots.some(x => x.active && x.sym === sym)) {
-                        let tV = (u.cap * u.lev) / u.slots / 3.0; // নিরাপদ ৩.০ ডিভাইডার
+                        let tV = (u.cap * u.lev) / u.slots / 3.0; 
                         let marginNeeded = tV / u.lev;
                         if (u.mode === 'demo' && u.cap < marginNeeded) continue;
 
