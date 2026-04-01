@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 QUANTUM APEX HUB v8.0 - DYNAMIC CAPITAL ADAPTIVE
+// 👑 QUANTUM APEX HUB v9.0 - MAX PROFIT TRAILER
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -79,15 +79,15 @@ async function startGlobalEngine() {
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
             let feeR = u.fMode === 'bnb' ? 0.0004 : 0.0005;
 
-            // 🎯 TARGET COMPLETE CHECK
+            // 🎯 TARGET CHECK
             let growthBDT = (Number(u.profit || 0) * 124);
             if (growthBDT >= Number(u.targetBDT) && u.status !== 'COMPLETED') {
                 u.isPaused = true; u.status = 'COMPLETED'; saveDB();
-                sendTG(`🎯 <b>TARGET COMPLETED!</b>\nNew entries paused. Only clearing existing trades.`, u.cid);
+                sendTG(`🎯 <b>TARGET REACHED!</b>\nNew entries paused. Closing current trades at peak.`, u.cid);
             }
 
-            // 🛡️ SMART AUTO-PAUSE (BTC CRASH FILTER)
-            if (btcT < -0.25 && !u.isPaused) { u.isPaused = true; u.sysPaused = true; saveDB(); }
+            // 🛡️ CRASH PROTECTION
+            if (btcT < -0.3 && !u.isPaused) { u.isPaused = true; u.sysPaused = true; saveDB(); }
             else if (u.sysPaused && btcT > -0.05) { u.isPaused = false; u.sysPaused = false; saveDB(); }
 
             u.userSlots.forEach(async (sl) => {
@@ -99,62 +99,64 @@ async function startGlobalEngine() {
                 sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
-                // 💰 SMART TAKE PROFIT (EMA TRAILING)
-                let minP = 2.0; 
-                if (sl.netBDT >= minP) {
-                    // যদি EMA7 এখনও EMA25 এর উপরে থাকে, প্রফিট রান করতে দাও (বেশি লাভের চান্স)
-                    if (ms.ema7 < ms.ema25 || sl.netBDT > (u.cap * 0.1 * 124)) { 
+                // 🔥 SMART PROFIT-LOCK & TRAILER (সর্বোচ্চ লাভে বিক্রির জন্য)
+                let minTP = 0.8; // ০.৮% লাভ হলে ট্র্যাকিং শুরু
+                if (sl.pnl >= minTP) {
+                    if (!sl.maxPnl || sl.pnl > sl.maxPnl) sl.maxPnl = sl.pnl; // পিক রেকর্ড
+
+                    let dropFromPeak = sl.maxPnl - sl.pnl;
+                    let trailOffset = 0.25; // পিক থেকে ০.২৫% কমলে সেল
+
+                    if (dropFromPeak >= trailOffset || sl.pnl >= 4.5) {
                         sl.isClosing = true;
                         if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
                             let gainUSD = (sl.netBDT / 124);
                             u.profit = Number(u.profit || 0) + gainUSD;
                             if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
-                            sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal Hub: ৳${(u.profit * 124).toFixed(2)}`, u.cid);
-                            Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
+                            sendTG(`💎 <b>PROFIT BOOKED: #${sl.sym}</b>\nPeak: ${sl.maxPnl.toFixed(2)}% | Net: ৳${sl.netBDT.toFixed(2)}`, u.cid);
+                            Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, maxPnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
                         } else sl.isClosing = false;
                     }
                 }
 
-                // 🌀 DYNAMIC DCA (CAPITAL ADAPTIVE)
-                let dcaStep = -3.5; 
+                // 🌀 FAST RECOVERY DCA (PRIORITY)
+                let dcaStep = -2.8; 
                 let nextDcaPnl = (sl.dca + 1) * dcaStep;
-                
-                // ব্যালেন্স অনুযায়ী DCA করার সামর্থ্য চেক
-                let currentWallet = parseFloat(await getBinanceBalance(u));
-                let dcaAmount = (sl.totalCost / u.lev) * 1.2;
+                let walletBal = parseFloat(await getBinanceBalance(u));
+                let dcaCost = (sl.totalCost / u.lev) * 1.2;
 
-                if (sl.pnl <= nextDcaPnl && sl.dca < 8 && currentWallet > dcaAmount) {
-                    let dQty = (parseFloat(sl.qty) * 1.1).toFixed(COINS.find(c => c.s === sl.sym).qd);
+                if (sl.pnl <= nextDcaPnl && sl.dca < 8 && walletBal > dcaCost) {
+                    let dQty = (parseFloat(sl.qty) * 1.15).toFixed(COINS.find(c => c.s === sl.sym).qd);
                     if (await placeOrder(sl.sym, "BUY", dQty, u)) {
                         let addM = (parseFloat(dQty) * ms.p) / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - addM;
                         sl.totalCost += (parseFloat(dQty) * ms.p); 
                         sl.qty = (parseFloat(sl.qty) + parseFloat(dQty)).toString();
-                        sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.marginCost = (sl.totalCost/u.lev); saveDB();
-                        sendTG(`🌀 <b>SMART DCA: #${sl.sym}</b>\nLevel: ${sl.dca} | Added: $${addM.toFixed(2)}`, u.cid);
+                        sl.buy = sl.totalCost / parseFloat(sl.qty); 
+                        sl.dca++; sl.maxPnl = 0; sl.marginCost = (sl.totalCost/u.lev); saveDB();
+                        sendTG(`🌀 <b>RECOVERY DCA: #${sl.sym}</b>\nLevel: ${sl.dca} | Fast Recovery Mode`, u.cid);
                     }
                 }
             });
 
-            // 🚀 SMART ENTRY (RESERVE 1 SLOT & DCA PRIORITY)
-            let maxAllowedSlots = u.slots > 1 ? u.slots - 1 : 1; 
-            if (!u.isPaused && activeTrades < maxAllowedSlots && u.status !== 'COMPLETED') {
+            // 🚀 RESERVE 1 SLOT & SMART ENTRY
+            let maxEntries = u.slots > 1 ? u.slots - 1 : 1; 
+            if (!u.isPaused && activeTrades < maxEntries && u.status !== 'COMPLETED') {
                 for (let sym of Object.keys(market)) {
-                    if (activeTrades >= maxAllowedSlots) break;
+                    if (activeTrades >= maxEntries) break;
                     const m = market[sym]; if (m.p === 0 || m.history.length < 40) continue;
                     
-                    // স্ট্রং রিভার্সাল সিগন্যাল (RSI < 30 & EMA Cross)
+                    // এন্ট্রি কনফার্মেশন: RSI ওভারসোল্ড + বুলিশ ক্রস
                     if (m.rsi < 32 && m.ema7 > m.ema25 && !u.userSlots.some(x => x.active && x.sym === sym)) {
-                        let totalCap = parseFloat(u.cap);
-                        let tV = (totalCap * u.lev) / u.slots / 2.5; 
-                        let marginNeeded = tV / u.lev;
+                        let entryVal = (u.cap * u.lev) / u.slots / 2.8; 
+                        let marginNeed = entryVal / u.lev;
                         
-                        if (totalCap > marginNeeded) {
-                            let qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd);
+                        if (u.cap > marginNeed) {
+                            let qty = (entryVal / m.p).toFixed(COINS.find(c => c.s === sym).qd);
                             const sIdx = u.userSlots.findIndex(sl => !sl.active);
                             if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
-                                if(u.mode === 'demo') u.cap = Number(u.cap) - marginNeeded;
-                                u.userSlots[sIdx] = { id: sIdx, active: true, sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: 0, maxNetBDT: 0, marginCost: marginNeeded, isClosing: false };
+                                if(u.mode === 'demo') u.cap = Number(u.cap) - marginNeed;
+                                u.userSlots[sIdx] = { id: sIdx, active: true, sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: 0, maxPnl: 0, marginCost: marginNeed, isClosing: false };
                                 activeTrades++; saveDB(); sendTG(`🚀 <b>HUB ENTRY: #${sym}</b>`, u.cid);
                             }
                         }
@@ -166,6 +168,7 @@ async function startGlobalEngine() {
     ws.on('close', () => setTimeout(startGlobalEngine, 3000));
 }
 
+// SERVER & UI (অক্ষুণ্ণ রাখা হয়েছে)
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`); const userId = url.pathname.slice(1);
     if (url.pathname === '/api/data') {
@@ -176,7 +179,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; u.sysPaused = false; u.status = 'ACTIVE'; saveDB(); } res.writeHead(200); return res.end("OK"); }
     if (url.pathname === '/register') { 
         let q = url.searchParams; let id = q.get('id'), cap = Number(q.get('cap')), target = Number(q.get('target')), lev = Number(q.get('lev')), slots = Number(q.get('slots'));
-        cachedUsers[id] = { api: q.get('api'), sec: q.get('sec'), cid: q.get('cid'), cap: cap, lev: lev, slots: slots, targetBDT: target, mode: q.get('mode'), fMode: q.get('fmode'), profit: 0, isPaused: false, sysPaused: false, status: 'ACTIVE', userSlots: Array(slots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, netBDT: 0, maxNetBDT: 0, marginCost: 0 })) };
+        cachedUsers[id] = { api: q.get('api'), sec: q.get('sec'), cid: q.get('cid'), cap: cap, lev: lev, slots: slots, targetBDT: target, mode: q.get('mode'), fMode: q.get('fmode'), profit: 0, isPaused: false, sysPaused: false, status: 'ACTIVE', userSlots: Array(slots).fill(null).map((_, i) => ({ id: i, active: false, sym: '', buy: 0, qty: 0, pnl: 0, curP: 0, dca: 0, totalCost: 0, netBDT: 0, maxPnl: 0, marginCost: 0 })) };
         saveDB(); res.writeHead(302, { 'Location': '/' + id }); return res.end(); 
     }
     if (url.pathname === '/reset-logout') { if (cachedUsers[userId]) { delete cachedUsers[userId]; saveDB(); } res.writeHead(302, { 'Location': '/' }); return res.end(); }
