@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 QUANTUM FAST PROFIT HUB v7.0 - NO STOP LOSS
+// 👑 QUANTUM APEX HUB v8.0 - DYNAMIC CAPITAL ADAPTIVE
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
@@ -76,21 +76,19 @@ async function startGlobalEngine() {
         for (let uid in cachedUsers) {
             let u = cachedUsers[uid]; 
             let activeTrades = u.userSlots.filter(s => s.active).length;
-            if (u.status === 'COMPLETED' && activeTrades === 0) continue;
-
             let btcT = market["BTCUSDT"]?.btcTrend || 0;
             let feeR = u.fMode === 'bnb' ? 0.0004 : 0.0005;
 
-            // --- 🤖 SMART AUTO-PAUSE & TARGET ---
+            // 🎯 TARGET COMPLETE CHECK
             let growthBDT = (Number(u.profit || 0) * 124);
             if (growthBDT >= Number(u.targetBDT) && u.status !== 'COMPLETED') {
                 u.isPaused = true; u.status = 'COMPLETED'; saveDB();
-                sendTG(`🎯 <b>TARGET COMPLETED!</b>\nTotal Growth: ৳${growthBDT.toFixed(2)}\n<i>Bot is now paused.</i>`, u.cid);
+                sendTG(`🎯 <b>TARGET COMPLETED!</b>\nNew entries paused. Only clearing existing trades.`, u.cid);
             }
 
-            // বিপদজনক মার্কেট ফিল্টার (BTC ড্রপ করলে নতুন এন্ট্রি বন্ধ)
-            if (btcT < -0.18 && !u.isPaused) { u.isPaused = true; u.sysPaused = true; saveDB(); }
-            else if (u.sysPaused && btcT > -0.02) { u.isPaused = false; u.sysPaused = false; saveDB(); }
+            // 🛡️ SMART AUTO-PAUSE (BTC CRASH FILTER)
+            if (btcT < -0.25 && !u.isPaused) { u.isPaused = true; u.sysPaused = true; saveDB(); }
+            else if (u.sysPaused && btcT > -0.05) { u.isPaused = false; u.sysPaused = false; saveDB(); }
 
             u.userSlots.forEach(async (sl) => {
                 if (!sl.active || sl.isClosing) return;
@@ -101,59 +99,70 @@ async function startGlobalEngine() {
                 sl.pnl = rawPnL - (feeR * 200);
                 sl.netBDT = ((parseFloat(sl.qty) * ms.p - sl.totalCost) - (sl.totalCost + parseFloat(sl.qty) * ms.p) * feeR) * 124;
 
-                // 💰 দ্রুত প্রফিট বুকিং (নিট ১ টাকা লাভ হলেই এক্সিট)
-                let minP = 1.0; 
+                // 💰 SMART TAKE PROFIT (EMA TRAILING)
+                let minP = 2.0; 
                 if (sl.netBDT >= minP) {
-                    sl.isClosing = true;
-                    if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
-                        let gainUSD = (sl.netBDT / 124);
-                        u.profit = Number(u.profit || 0) + gainUSD;
-                        if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
-                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nHub Total: ৳${(u.profit * 124).toFixed(4)} ($${u.profit.toFixed(6)})`, u.cid);
-                        Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
-                    } else sl.isClosing = false;
+                    // যদি EMA7 এখনও EMA25 এর উপরে থাকে, প্রফিট রান করতে দাও (বেশি লাভের চান্স)
+                    if (ms.ema7 < ms.ema25 || sl.netBDT > (u.cap * 0.1 * 124)) { 
+                        sl.isClosing = true;
+                        if (await placeOrder(sl.sym, "SELL", sl.qty, u)) {
+                            let gainUSD = (sl.netBDT / 124);
+                            u.profit = Number(u.profit || 0) + gainUSD;
+                            if(u.mode === 'demo') u.cap = Number(u.cap) + (sl.totalCost / u.lev) + gainUSD;
+                            sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nNet: ৳${sl.netBDT.toFixed(2)}\nTotal Hub: ৳${(u.profit * 124).toFixed(2)}`, u.cid);
+                            Object.assign(sl, { active: false, sym: '', isClosing: false, pnl: 0, netBDT: 0, marginCost: 0, dca: 0 }); saveDB();
+                        } else sl.isClosing = false;
+                    }
                 }
 
-                // 🌀 বর্ধিত ডিসিএ লজিক (৫ লেভেল পর্যন্ত ব্যাকআপ)
-                let dcaStep = -4.0; // প্রতি ৪% ড্রপে ডিসিএ
+                // 🌀 DYNAMIC DCA (CAPITAL ADAPTIVE)
+                let dcaStep = -3.5; 
                 let nextDcaPnl = (sl.dca + 1) * dcaStep;
                 
-                if (sl.pnl <= nextDcaPnl && sl.dca < 5 && (sl.totalCost/u.lev)*1.5 < u.cap*0.95) {
-                    let dQty = (parseFloat(sl.qty) * 0.9).toFixed(COINS.find(c => c.s === sl.sym).qd);
+                // ব্যালেন্স অনুযায়ী DCA করার সামর্থ্য চেক
+                let currentWallet = parseFloat(await getBinanceBalance(u));
+                let dcaAmount = (sl.totalCost / u.lev) * 1.2;
+
+                if (sl.pnl <= nextDcaPnl && sl.dca < 8 && currentWallet > dcaAmount) {
+                    let dQty = (parseFloat(sl.qty) * 1.1).toFixed(COINS.find(c => c.s === sl.sym).qd);
                     if (await placeOrder(sl.sym, "BUY", dQty, u)) {
                         let addM = (parseFloat(dQty) * ms.p) / u.lev;
                         if(u.mode === 'demo') u.cap = Number(u.cap) - addM;
                         sl.totalCost += (parseFloat(dQty) * ms.p); 
                         sl.qty = (parseFloat(sl.qty) + parseFloat(dQty)).toString();
                         sl.buy = sl.totalCost / parseFloat(sl.qty); sl.dca++; sl.marginCost = (sl.totalCost/u.lev); saveDB();
-                        sendTG(`🌀 <b>DCA LEVEL ${sl.dca}: #${sl.sym}</b>\nAdded: $${addM.toFixed(2)}`, u.cid);
+                        sendTG(`🌀 <b>SMART DCA: #${sl.sym}</b>\nLevel: ${sl.dca} | Added: $${addM.toFixed(2)}`, u.cid);
                     }
                 }
             });
 
-            // 🚀 দ্রুত এন্ট্রি (EMA 7/25 ক্রসওভার + RSI)
-            if (!u.isPaused && activeTrades < u.slots && u.status !== 'COMPLETED') {
+            // 🚀 SMART ENTRY (RESERVE 1 SLOT & DCA PRIORITY)
+            let maxAllowedSlots = u.slots > 1 ? u.slots - 1 : 1; 
+            if (!u.isPaused && activeTrades < maxAllowedSlots && u.status !== 'COMPLETED') {
                 for (let sym of Object.keys(market)) {
-                    if (activeTrades >= u.slots) break;
+                    if (activeTrades >= maxAllowedSlots) break;
                     const m = market[sym]; if (m.p === 0 || m.history.length < 40) continue;
                     
-                    if (m.rsi < 35 && m.ema7 > m.ema25 && !u.userSlots.some(x => x.active && x.sym === sym)) {
-                        let tV = (u.cap * u.lev) / u.slots / 2.8; 
+                    // স্ট্রং রিভার্সাল সিগন্যাল (RSI < 30 & EMA Cross)
+                    if (m.rsi < 32 && m.ema7 > m.ema25 && !u.userSlots.some(x => x.active && x.sym === sym)) {
+                        let totalCap = parseFloat(u.cap);
+                        let tV = (totalCap * u.lev) / u.slots / 2.5; 
                         let marginNeeded = tV / u.lev;
-                        if (u.mode === 'demo' && u.cap < marginNeeded) continue;
-
-                        let qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd);
-                        const sIdx = u.userSlots.findIndex(sl => !sl.active);
-                        if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
-                            if(u.mode === 'demo') u.cap = Number(u.cap) - marginNeeded;
-                            u.userSlots[sIdx] = { id: sIdx, active: true, sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: 0, maxNetBDT: 0, marginCost: marginNeeded, isClosing: false };
-                            activeTrades++; saveDB(); sendTG(`🚀 <b>HUB ENTRY: #${sym}</b>`, u.cid);
+                        
+                        if (totalCap > marginNeeded) {
+                            let qty = (tV / m.p).toFixed(COINS.find(c => c.s === sym).qd);
+                            const sIdx = u.userSlots.findIndex(sl => !sl.active);
+                            if (sIdx !== -1 && await placeOrder(sym, "BUY", qty, u)) {
+                                if(u.mode === 'demo') u.cap = Number(u.cap) - marginNeeded;
+                                u.userSlots[sIdx] = { id: sIdx, active: true, sym: sym, buy: m.p, qty: qty, pnl: 0, curP: m.p, dca: 0, totalCost: (parseFloat(qty) * m.p), netBDT: 0, maxNetBDT: 0, marginCost: marginNeeded, isClosing: false };
+                                activeTrades++; saveDB(); sendTG(`🚀 <b>HUB ENTRY: #${sym}</b>`, u.cid);
+                            }
                         }
                     }
                 }
             }
         }
-    }, 900);
+    }, 1000);
     ws.on('close', () => setTimeout(startGlobalEngine, 3000));
 }
 
@@ -194,7 +203,7 @@ const server = http.createServer(async (req, res) => {
                 else { pM.innerText = "⚖️ Stable ("+d.btcTrend+"%)"; pM.className="text-[10px] font-black text-sky-400"; pB.className="absolute top-0 left-0 h-1 bg-sky-500 w-full"; }
                 let h = ''; d.userSlots.forEach((s, i) => { let m = s.active ? Math.max(0, Math.min(100, ((s.curP - s.buy) / (s.buy * 0.005)) * 100)) : 0;
                     h += \`<div class="p-5 bg-slate-900/40 backdrop-blur-sm rounded-3xl border border-zinc-800 mb-3 shadow-lg uppercase"><div class="flex justify-between items-center mb-3"><span class="text-[11px] font-black \${s.active ? 'text-sky-400' : 'text-zinc-700'} tracking-wider">\${s.active ? s.sym + ' [DCA:'+s.dca+']' : 'Slot '+(i+1)+' Idle'}</span>\${s.active ? \`<span class="text-[11px] font-black \${s.netBDT>=0?'text-green-500':'text-red-400'}">\${s.pnl.toFixed(2)}% (৳\${s.netBDT.toFixed(2)})</span>\` : ''}</div>\${s.active ? \`<div class="w-full bg-black h-1.5 rounded-full overflow-hidden mb-4"><div class="h-full bg-sky-500 transition-all duration-1000" style="width: \${m}%"></div></div><div class="grid grid-cols-2 text-[10px] font-mono text-slate-500 gap-y-1"><div>Buy: \${s.buy.toFixed(6)}</div><div class="text-right text-indigo-400 font-bold">Cut: $\${(s.marginCost || 0).toFixed(2)}</div><div>Live: \${s.curP.toFixed(6)}</div><div class="text-right italic">Apex Hub Active</div></div>\` : ''}</div>\`;
-                }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 900);</script></body></html>`);
+                }); document.getElementById('slotContainer').innerHTML = h; } catch(e) {} } setInterval(updateData, 1000);</script></body></html>`);
     }
 });
 server.listen(process.env.PORT || 8080, '0.0.0.0', () => startGlobalEngine());
