@@ -5,14 +5,21 @@ const http = require('http');
 const fs = require('fs');
 
 // ==============================================
-// 👑 QUANTUM APEX AI v41.0 - LIVE SYNC & SMART RECOVERY
+// 👑 QUANTUM APEX AI v41.1 - FIXED SLOT PERSISTENCE
 // ==============================================
 const MASTER_TG_TOKEN = "8281887575:AAG5OR86LCQO_90479FKkia2F1sEAJjCP60"; 
 const FIXED_CHAT_ID = "5279510350"; 
-const DB_FILE = 'quantum_ai_v41_pro.json';
+const DB_FILE = 'quantum_ai_v41_final.json';
 
 let cachedUsers = {}; 
-function loadDB() { try { if (fs.existsSync(DB_FILE)) cachedUsers = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch(e) { cachedUsers = {}; } }
+function loadDB() { 
+    try { 
+        if (fs.existsSync(DB_FILE)) {
+            const data = fs.readFileSync(DB_FILE, 'utf8');
+            cachedUsers = JSON.parse(data);
+        }
+    } catch(e) { cachedUsers = {}; } 
+}
 function saveDB() { try { fs.writeFileSync(DB_FILE, JSON.stringify(cachedUsers, null, 2)); } catch(e) {} }
 loadDB();
 
@@ -59,30 +66,30 @@ async function startGlobalEngine() {
             let u = cachedUsers[uid]; 
             let walletBal = parseFloat(u.cap || 0);
             let feeR = u.fMode === 'bnb' ? 0.00018 : 0.0002;
-            let growthBDT = (Number(u.profit || 0) * 124);
-            let isTargetDone = growthBDT >= Number(u.targetBDT);
+            let isTargetDone = (Number(u.profit || 0) * 124) >= Number(u.targetBDT);
 
-            if (isTargetDone && !u.isPaused) { u.isPaused = true; u.status = 'COMPLETED'; saveDB(); sendTG(`🎯 <b>TARGET REACHED!</b>`, u.cid); }
-
-            let aiSlots = walletBal < 30 ? 2 : (walletBal < 150 ? 4 : 8);
-            if (!u.userSlots || u.userSlots.length !== aiSlots) {
-                u.userSlots = Array(aiSlots).fill(null).map((_, i) => ({ id: i, active: false, status: 'IDLE', sym: '', buy: 0, qty: 0, totalCost: 0, marginUsed: 0, targetP: 0, curP: 0, dca: 0, entryTime: 0 }));
+            // 🤖 ফিক্সড স্লট লজিক: রিফ্রেশ দিলেও ডাটা মুছবে না
+            let aiSlotsCount = walletBal < 30 ? 2 : (walletBal < 150 ? 4 : 8);
+            if (!u.userSlots || u.userSlots.length !== aiSlotsCount) {
+                let existing = u.userSlots || [];
+                u.userSlots = Array(aiSlotsCount).fill(null).map((_, i) => {
+                    return existing[i] || { id: i, active: false, status: 'IDLE', sym: '', buy: 0, qty: 0, totalCost: 0, marginUsed: 0, targetP: 0, curP: 0, dca: 0, pnl: 0, entryTime: 0 };
+                });
                 saveDB();
             }
 
             u.userSlots.forEach(async (sl) => {
                 if (!sl.active) return;
                 const ms = market[sl.sym]; if(!ms || ms.p === 0) return;
-                sl.curP = ms.p; // লাইভ প্রাইস আপডেট
+                sl.curP = ms.p;
                 sl.pnl = (((ms.p - sl.buy) / sl.buy) * 100 * u.lev).toFixed(2);
 
                 if (sl.status === 'BUY_PENDING') {
                     if (ms.p <= sl.buy) {
                         sl.status = 'ACTIVE'; sl.entryTime = Date.now();
                         let tVal = (sl.id % 2 === 0) ? Number(u.evenT) : Number(u.oddT);
-                        let targetPrice = (sl.buy * (1 + (tVal/100) + feeR)).toFixed(COINS.find(c => c.s === sl.sym).d);
-                        sl.targetP = parseFloat(targetPrice);
-                        sendTG(`🚀 <b>BUY HIT: #${sl.sym}</b>\nPrice: ${ms.p}\nTarget: ${targetPrice}`, u.cid);
+                        sl.targetP = (sl.buy * (1 + (tVal/100) + feeR)).toFixed(COINS.find(c => c.s === sl.sym).d);
+                        sendTG(`🚀 <b>REAL HIT: #${sl.sym}</b>\nPrice: ${ms.p}\nTarget: ${sl.targetP}`, u.cid);
                         sl.status = 'SELL_PENDING'; saveDB();
                     } else if ((Date.now() - sl.entryTime)/1000 > 60) {
                         if(u.mode === 'demo') u.cap = parseFloat((Number(u.cap) + sl.marginUsed).toFixed(2));
@@ -93,15 +100,14 @@ async function startGlobalEngine() {
 
                 if (sl.status === 'SELL_PENDING') {
                     if (ms.p >= sl.targetP) {
-                        let netProfitUSD = (parseFloat(sl.qty) * sl.targetP) - sl.totalCost;
-                        if(u.mode === 'demo') u.cap = parseFloat((Number(u.cap) + sl.marginUsed + netProfitUSD).toFixed(2));
-                        u.profit = parseFloat((Number(u.profit || 0) + netProfitUSD).toFixed(4));
-                        sendTG(`✅ <b>PROFIT: #${sl.sym}</b>\nGain: ৳${(netProfitUSD * 124).toFixed(2)}\nWallet: $${u.cap}`, u.cid);
+                        let netUSD = (parseFloat(sl.qty) * sl.targetP) - sl.totalCost;
+                        if(u.mode === 'demo') u.cap = parseFloat((Number(u.cap) + sl.marginUsed + netUSD).toFixed(2));
+                        u.profit = parseFloat((Number(u.profit || 0) + netUSD).toFixed(4));
+                        sendTG(`✅ <b>PROFIT! #${sl.sym}</b>\nGain: ৳${(netUSD*124).toFixed(2)}\nBalance: $${u.cap}`, u.cid);
                         Object.assign(sl, { active: false, status: 'IDLE', sym: '', marginUsed: 0, totalCost: 0, dca: 0 }); saveDB();
                     } 
-                    // 🌀 SMART RECOVERY DCA (মুল ক্যাপিটাল খেয়াল রেখে)
                     else if (parseFloat(sl.pnl) < -3.0 && sl.dca < 5 && walletBal > (sl.marginUsed * 1.5)) {
-                        if (ms.p > ms.ema7) { // Reversal Signal
+                        if (ms.p > ms.ema7) {
                             let addQty = (parseFloat(sl.qty) * 1.3).toFixed(COINS.find(c => c.s === sl.sym).qd);
                             let addM = (parseFloat(addQty) * ms.p) / u.lev;
                             if(u.mode === 'demo') u.cap = parseFloat((u.cap - addM).toFixed(2));
@@ -111,18 +117,19 @@ async function startGlobalEngine() {
                             sl.marginUsed += addM; sl.dca++;
                             let tVal = (sl.id % 2 === 0) ? Number(u.evenT) : Number(u.oddT);
                             sl.targetP = (sl.buy * (1 + (tVal/100) + feeR)).toFixed(COINS.find(c => c.s === sl.sym).d);
-                            saveDB(); sendTG(`🌀 <b>RECOVERY DCA: #${sl.sym}</b>\nAvg Optimized.`, u.cid);
+                            saveDB(); sendTG(`🌀 <b>RECOVERY DCA: #${sl.sym}</b>`, u.cid);
                         }
                     }
                     return;
                 }
             });
 
-            if (!u.isPaused && !isTargetDone && u.userSlots.filter(s => s.active).length < (aiSlots - 1)) {
+            if (!u.isPaused && !isTargetDone && u.userSlots.filter(s => s.active).length < (aiSlotsCount - 1)) {
                 for (let sym of Object.keys(market)) {
+                    if (u.userSlots.filter(s => s.active).length >= (aiSlotsCount - 1)) break;
                     const m = market[sym]; if (m.p === 0 || m.history.length < 50) continue;
                     if (m.rsi < 28 && m.p > m.ema7 && !u.userSlots.some(x => x.active && x.sym === sym)) {
-                        let entryVal = (walletBal * u.lev) / aiSlots / 3.8;
+                        let entryVal = (walletBal * u.lev) / aiSlotsCount / 4;
                         let limitPrice = (m.p * (1 - feeR)).toFixed(COINS.find(c => c.s === sym).d);
                         let qty = (entryVal / parseFloat(limitPrice)).toFixed(COINS.find(c => c.s === sym).qd);
                         let mNeeded = (parseFloat(qty) * parseFloat(limitPrice)) / u.lev;
@@ -148,8 +155,8 @@ const server = http.createServer(async (req, res) => {
         const u = cachedUsers[url.searchParams.get('id')];
         const apiData = await getBinanceBalance(u || {});
         let btc = market["BTCUSDT"] || { p: 0, btcTrend: 0 };
-        let pulse = btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "STABLE");
         if(u) u.userSlots.forEach(s => { if(s.active) s.curP = market[s.sym]?.p || s.buy; });
+        let pulse = btc.btcTrend > 0.05 ? "BULLISH" : (btc.btcTrend < -0.1 ? "BEARISH" : "STABLE");
         return res.end(JSON.stringify({ ...u, balance: apiData.bal, apiStatus: apiData.status, btcPrice: btc.p.toFixed(2), btcTrend: btc.btcTrend.toFixed(2), pulse: pulse }));
     }
     if (url.pathname === '/toggle-pause') { let u = cachedUsers[url.searchParams.get('id')]; if (u) { u.isPaused = !u.isPaused; saveDB(); } res.writeHead(200); return res.end("OK"); }
@@ -162,10 +169,10 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (!userId || !cachedUsers[userId]) {
-        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="evenT" placeholder="Even %" class="bg-black p-4 rounded-xl outline-none" required><input name="oddT" placeholder="Odd %" class="bg-black p-4 rounded-xl outline-none" required></div><input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Launch Apex v41</button></form></div></body></html>`);
+        res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-6 flex items-center min-h-screen font-sans text-center"><div class="max-w-md mx-auto w-full space-y-6"><h1 class="text-7xl font-black text-sky-400 italic">QUANTUM</h1><form action="/register" method="GET" class="bg-slate-900 p-8 rounded-[2.5rem] space-y-4 border border-slate-800 text-left shadow-2xl"><input name="id" placeholder="Username" class="w-full bg-black p-4 rounded-xl outline-none" required><div class="grid grid-cols-2 gap-2"><select name="mode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="live">Live Trading</option><option value="demo">Demo Mode</option></select><select name="fmode" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><option value="usdt">Fee: USDT</option><option value="bnb">Fee: BNB</option></select></div><input name="api" placeholder="Binance API Key" class="w-full bg-black p-4 rounded-xl outline-none"><input name="sec" placeholder="Binance Secret" class="w-full bg-black p-4 rounded-xl outline-none"><input name="cid" placeholder="Telegram Chat ID" class="w-full bg-black p-4 rounded-xl outline-none"><div class="grid grid-cols-2 gap-2"><input name="cap" type="number" placeholder="Capital $" class="bg-black p-4 rounded-xl outline-none"><input name="target" type="number" placeholder="Target ৳" class="bg-black p-4 rounded-xl outline-none"></div><div class="grid grid-cols-2 gap-2"><input name="evenT" placeholder="Even %" class="bg-black p-4 rounded-xl outline-none" required><input name="oddT" placeholder="Odd %" class="bg-black p-4 rounded-xl outline-none" required></div><input name="lev" type="number" placeholder="Leverage" class="bg-black p-4 rounded-xl border border-slate-800 outline-none"><button type="submit" class="w-full bg-sky-600 p-5 rounded-full font-black uppercase shadow-xl">Launch Apex v41.1</button></form></div></body></html>`);
     } else {
         res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#020617] text-white p-4 font-sans uppercase"><div class="max-width-xl mx-auto space-y-4">
-        <div class="p-4 bg-slate-900/50 backdrop-blur-md rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold">AI Live Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="px-3 py-2 bg-indigo-600/20 border border-indigo-500/50 rounded-lg text-[8px] font-black text-indigo-400">🛡️ QUANTUM v41 PRO</div></div></div>
+        <div class="p-4 bg-slate-900/50 backdrop-blur-md rounded-[2rem] border border-slate-800 shadow-lg relative overflow-hidden"><div id="pB" class="absolute top-0 left-0 h-1 transition-all duration-1000"></div><div class="flex justify-between items-center mt-1"><div><p class="text-[8px] text-slate-500 font-bold">AI Live Pulse</p><p class="text-[10px] font-black" id="pM">Syncing...</p><p class="text-[8px] text-slate-400" id="pP">BTC: $0.00</p></div><div class="px-3 py-2 bg-indigo-600/20 border border-indigo-500/50 rounded-lg text-[8px] font-black text-indigo-400">🛡️ QUANTUM v41.1 PRO</div></div></div>
         <div class="p-6 bg-slate-900 rounded-[2.5rem] border-2 border-sky-500/50 text-center shadow-2xl tracking-tighter"><p class="text-[10px] text-sky-400 font-bold mb-1 italic">Wallet Balance</p><p class="text-5xl font-black text-white">$<span id="balanceText">0.00</span></p></div>
         <div class="grid grid-cols-2 gap-4 text-center"><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1">Growth (BDT)</p><p class="text-4xl font-black text-green-400">৳<span id="profitText">0</span></p></div><div class="p-6 bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl"><p class="text-[9px] text-slate-500 font-bold mb-1 italic">Target BDT</p><p class="text-4xl font-black text-sky-400">৳<span id="targetText">0</span></p></div></div>
         <div id="slotContainer" class="space-y-3"></div><div class="grid grid-cols-2 gap-3 pt-4 uppercase"><button onclick="togglePause()" id="pauseBtn" class="py-5 rounded-full text-[10px] font-black bg-orange-900/20 border border-orange-500/30 text-orange-400">Pause</button><a href="/reset-logout?id=${userId}" class="block bg-slate-800 border border-slate-700 text-slate-400 py-5 rounded-full text-center text-[10px] font-black uppercase">Logout</a></div></div><script>
